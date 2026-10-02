@@ -1,0 +1,7 @@
+sources:
+  - name: KSDK 5
+    url: https://www.ksdk.com/feeds/syndication/rss/news
+    type: news
+  - name: Fox2
+    url: https://fox2now.com/news/feed/
+    type: news
