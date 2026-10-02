@@ -1,0 +1,115 @@
+"""SQLAlchemy models for sources, raw items, classifications, and incidents."""
+
+import hashlib
+from datetime import datetime
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from db import Base
+
+RAW_ITEM_STATUSES = ("new", "classified", "failed")
+CRIME_TYPES = ("shooting", "burglary", "homicide")
+INCIDENT_STATUSES = ("confirmed", "review", "rejected")
+
+# Stored as VARCHAR + CHECK so the schema is portable between SQLite and Postgres.
+_enum_opts = {"native_enum": False, "create_constraint": True}
+RawItemStatus = Enum(*RAW_ITEM_STATUSES, name="raw_item_status", **_enum_opts)
+CrimeType = Enum(*CRIME_TYPES, name="crime_type", **_enum_opts)
+IncidentStatus = Enum(*INCIDENT_STATUSES, name="incident_status", **_enum_opts)
+
+
+def hash_url(url: str) -> str:
+    """Stable sha256 hex digest of a URL, used for raw_items dedup."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+class Source(Base):
+    __tablename__ = "sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(2048), unique=True)
+    type: Mapped[str] = mapped_column(String(50))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fail_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    raw_items: Mapped[list["RawItem"]] = relationship(back_populates="source")
+
+
+class RawItem(Base):
+    __tablename__ = "raw_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
+    url: Mapped[str] = mapped_column(String(2048))
+    url_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    title: Mapped[str] = mapped_column(String(1000))
+    body: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(
+        RawItemStatus, default="new", server_default="new", index=True
+    )
+    retries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    source: Mapped[Source] = relationship(back_populates="raw_items")
+
+
+class Classification(Base):
+    __tablename__ = "classifications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"))
+    is_crime: Mapped[bool] = mapped_column(Boolean)
+    crime_type: Mapped[str | None] = mapped_column(CrimeType)
+    in_stl: Mapped[bool] = mapped_column(Boolean)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    location: Mapped[str | None] = mapped_column(String(500))
+    confidence: Mapped[float] = mapped_column(Float)
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Incident(Base):
+    __tablename__ = "incidents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    crime_type: Mapped[str] = mapped_column(CrimeType)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    location: Mapped[str | None] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(
+        IncidentStatus, default="review", server_default="review"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    raw_items: Mapped[list[RawItem]] = relationship(secondary="incident_items")
+
+
+class IncidentItem(Base):
+    __tablename__ = "incident_items"
+
+    incident_id: Mapped[int] = mapped_column(
+        ForeignKey("incidents.id"), primary_key=True
+    )
+    raw_item_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_items.id"), primary_key=True
+    )
