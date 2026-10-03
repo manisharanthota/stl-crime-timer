@@ -1,0 +1,101 @@
+# Hand-labeled headlines for `python -m classifier.eval` (runs the real LLM; not used by pytest).
+# expected.in_stl: null means "don't score this field".
+- title: "Man shot and wounded in north St. Louis' Walnut Park neighborhood"
+  body: "A 34-year-old man was shot in the leg Sunday night in the 5600 block of Riverview Boulevard, St. Louis police said. He was taken to a hospital in stable condition."
+  published_at: "2026-09-28T07:15:00-05:00"
+  expected: {is_crime: true, crime_type: shooting, in_stl: true}
+
+- title: "Teen killed in shooting near Tower Grove Park, police say"
+  body: "A 17-year-old boy was fatally shot late Friday on Arsenal Street in south St. Louis. Homicide detectives are investigating."
+  published_at: "2026-09-26T23:40:00-05:00"
+  expected: {is_crime: true, crime_type: homicide, in_stl: true}
+
+- title: "Woman found dead with gunshot wounds in Dutchtown home"
+  body: "Officers responding to a call for help Tuesday morning found a woman dead inside a home in the 3800 block of Virginia Avenue. Police are treating the death as a homicide."
+  published_at: "2026-09-29T11:02:00-05:00"
+  expected: {is_crime: true, crime_type: homicide, in_stl: true}
+
+- title: "Burglars smash into Soulard bar overnight, steal cash register"
+  body: "The owner of a bar on Russell Boulevard in Soulard says thieves broke in through a back door early Wednesday. St. Louis police are investigating the burglary."
+  published_at: "2026-09-30T09:30:00-05:00"
+  expected: {is_crime: true, crime_type: burglary, in_stl: true}
+
+- title: "Gunfire erupts outside downtown St. Louis nightclub; two hurt"
+  body: "Two people were shot early Saturday on Washington Avenue downtown after a fight spilled out of a club, police said."
+  published_at: "2026-09-27T03:50:00-05:00"
+  expected: {is_crime: true, crime_type: shooting, in_stl: true}
+
+- title: "Break-in reported at The Hill restaurant; suspects caught on camera"
+  body: "Surveillance video shows two men forcing open the front door of a restaurant on Marconi Avenue on The Hill early Thursday."
+  published_at: "2026-10-01T10:10:00-05:00"
+  expected: {is_crime: true, crime_type: burglary, in_stl: true}
+
+- title: "Man stabbed and killed in Fox Park; suspect in custody"
+  body: "A 41-year-old man died after being stabbed during an argument Monday evening in the 2700 block of Shenandoah Avenue in St. Louis."
+  published_at: "2026-09-29T06:45:00-05:00"
+  expected: {is_crime: true, crime_type: homicide, in_stl: true}
+
+- title: "Ferguson police investigate shooting that left one man wounded"
+  body: "A man was shot Saturday afternoon on West Florissant Avenue in Ferguson, police said."
+  published_at: "2026-09-27T16:20:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: false}
+
+- title: "Florissant homeowner reports burglary while family was on vacation"
+  body: "Florissant police say someone broke into a home on St. Catherine Street sometime last week."
+  published_at: "2026-09-30T14:00:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: false}
+
+- title: "Man killed in Jennings shooting Monday night"
+  body: "St. Louis County police are investigating after a man was found shot to death on Jennings Station Road in Jennings."
+  published_at: "2026-09-29T08:00:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: false}
+
+- title: "East St. Louis shooting leaves woman dead"
+  body: "Illinois State Police are investigating a fatal shooting Sunday on State Street in East St. Louis."
+  published_at: "2026-09-28T09:25:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: false}
+
+- title: "Man sentenced to life for 2023 murder in north St. Louis"
+  body: "A St. Louis judge on Tuesday sentenced a 29-year-old man to life in prison for the fatal shooting of a man outside a gas station in 2023."
+  published_at: "2026-09-29T15:30:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "Jury selection begins in trial of man accused in Central West End shooting"
+  body: "Testimony is expected to start Thursday in the trial of a man charged in a 2024 shooting that wounded two people."
+  published_at: "2026-09-30T12:00:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "Arrest made in 2025 killing of St. Louis bus driver"
+  body: "Police announced Wednesday that they have arrested a suspect in the homicide of a Metro bus driver killed in March 2025."
+  published_at: "2026-10-01T13:15:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "Opinion: St. Louis can't arrest its way out of gun violence"
+  body: "Every weekend brings more reports of people shot in our neighborhoods. City leaders need a new approach to prevention."
+  published_at: "2026-09-27T06:00:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "St. Louis homicides down 20% through September, police data show"
+  body: "The city recorded fewer murders and shootings in the first nine months of the year than the same period in 2025."
+  published_at: "2026-10-01T17:45:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "Cardinals drop dead heat in extra innings to Cubs"
+  body: "St. Louis fell 4-3 in 11 innings at Busch Stadium on Sunday."
+  published_at: "2026-09-28T22:30:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "SLU beats shot clock to win season opener"
+  body: "Billikens guard hits a buzzer-beating shot to win at Chaifetz Arena."
+  published_at: "2026-10-02T21:10:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "Two dead after crash on I-70 near downtown St. Louis"
+  body: "Two people were killed when a car slammed into a concrete barrier early Saturday, Missouri State Highway Patrol said."
+  published_at: "2026-09-27T08:05:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null}
+
+- title: "St. Louis County man charged in Clayton bank burglary"
+  body: "Prosecutors say the man broke into a bank branch in Clayton on Tuesday night."
+  published_at: "2026-10-01T11:40:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: false}
