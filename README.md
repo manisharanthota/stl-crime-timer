@@ -24,6 +24,12 @@ uvicorn api.main:app --reload
 
 Health check: http://127.0.0.1:8000/health
 
+## Fetch
+
+```bash
+python -m fetchers   # fetch all active sources once into raw_items
+```
+
 ## Test
 
 ```bash

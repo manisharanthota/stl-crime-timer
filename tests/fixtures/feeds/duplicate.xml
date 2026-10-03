@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example News</title>
+    <link>https://news.example/</link>
+    <description>Local news</description>
+    <item>
+      <title>Man shot in north St. Louis</title>
+      <link>https://news.example/2026/10/01/man-shot-north-st-louis?utm_medium=social</link>
+    </item>
+    <item>
+      <title>Homicide in Dutchtown</title>
+      <link>https://news.example/2026/10/02/dutchtown-homicide/</link>
+    </item>
+    <item>
+      <title>Homicide in Dutchtown (updated)</title>
+      <link>https://news.example/2026/10/02/dutchtown-homicide?ref=home</link>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example News</title>
+    <link>https://news.example/</link>
+    <description>Local news</description>
+    <item>
+      <title>Man shot in north St. Louis</title>
+      <link>https://news.example/2026/10/01/man-shot-north-st-louis/</link>
+      <description>Police say a man was shot Tuesday night.</description>
+      <pubDate>Wed, 01 Oct 2026 03:15:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Burglary reported in Soulard</title>
+      <link>https://news.example/2026/10/01/soulard-burglary?utm_source=rss</link>
+      <description>A business was broken into overnight.</description>
+      <pubDate>Wed, 01 Oct 2026 12:00:00 -0500</pubDate>
+    </item>
+    <item>
+      <title>City council passes budget</title>
+      <link>https://news.example/2026/10/01/council-budget</link>
+    </item>
+  </channel>
+</rss>

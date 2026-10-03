@@ -20,6 +20,7 @@ pytest tests/test_health.py::test_health # single test
 alembic upgrade head                     # apply migrations
 alembic revision --autogenerate -m "msg" # new migration
 python seed.py                           # load sources.yaml into sources (skips known urls)
+python -m fetchers                       # fetch all active sources once into raw_items
 ```
 
 ## Architecture
@@ -30,4 +31,5 @@ python seed.py                           # load sources.yaml into sources (skips
 - `seed.py` — `seed_sources(session, path)` inserts sources from `sources.yaml` whose url isn't already stored.
 - `alembic/env.py` — takes the DB URL from `config.py` (the value in `alembic.ini` is ignored) and uses `Base.metadata`; model modules must be imported there for autogenerate to see them.
 - `api/main.py` — FastAPI `app`.
-- `fetchers/`, `classifier/`, `matcher/`, `jobs/` — top-level packages, empty until their chunks are built.
+- `fetchers/` — `BaseFetcher` + `RSSFetcher` (httpx fetch, 15s timeout + User-Agent, feedparser parse; covers news and RSS.app feeds). `runner.run_fetchers(session, client=None)` loops active sources, each isolated: success sets `last_success_at`/resets `fail_count`, failure rolls back, increments `fail_count`, logs. Items dedup on `hash_url(normalize_url(url))` (query/fragment/trailing slash stripped). Tests inject an `httpx.MockTransport` client and use XML fixtures in `tests/fixtures/feeds/`.
+- `classifier/`, `matcher/`, `jobs/` — top-level packages, empty until their chunks are built.
