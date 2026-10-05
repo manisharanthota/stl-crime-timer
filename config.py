@@ -11,6 +11,11 @@ DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_RPM = 5.0
 DEFAULT_MATCH_LOCATION_THRESHOLD = 85.0
 DEFAULT_PIPELINE_INTERVAL_MINUTES = 10.0
+DEFAULT_ALERT_COOLDOWN_HOURS = 6.0
+
+
+def _flag(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 class Settings(BaseModel):
@@ -24,6 +29,9 @@ class Settings(BaseModel):
     match_location_threshold: float = DEFAULT_MATCH_LOCATION_THRESHOLD
     pipeline_interval_minutes: float = DEFAULT_PIPELINE_INTERVAL_MINUTES
     admin_token: str | None = None
+    alert_webhook_url: str | None = None
+    alert_on_new_incident: bool = False
+    alert_cooldown_hours: float = DEFAULT_ALERT_COOLDOWN_HOURS
 
 
 @lru_cache
@@ -44,4 +52,9 @@ def get_settings() -> Settings:
             os.getenv("PIPELINE_INTERVAL_MINUTES") or DEFAULT_PIPELINE_INTERVAL_MINUTES
         ),
         admin_token=os.getenv("ADMIN_TOKEN") or None,
+        alert_webhook_url=os.getenv("ALERT_WEBHOOK_URL") or None,
+        alert_on_new_incident=_flag(os.getenv("ALERT_ON_NEW_INCIDENT")),
+        alert_cooldown_hours=float(
+            os.getenv("ALERT_COOLDOWN_HOURS") or DEFAULT_ALERT_COOLDOWN_HOURS
+        ),
     )

@@ -174,3 +174,14 @@ class JobLock(Base):
     owner: Mapped[str] = mapped_column(String(64))
     acquired_at: Mapped[datetime] = mapped_column(UTCDateTime)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class AlertSent(Base):
+    """When an alert key was last sent, for cooldowns. resolved_at is set when a
+    recovery message went out; an unresolved row means the problem is still open."""
+
+    __tablename__ = "alerts_sent"
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    last_sent_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

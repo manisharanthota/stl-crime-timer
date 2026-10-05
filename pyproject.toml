@@ -31,7 +31,7 @@ dev = [
 py-modules = ["config", "db", "models", "seed", "timeutil"]
 
 [tool.setuptools.packages.find]
-include = ["api*", "fetchers*", "classifier*", "matcher*", "jobs*"]
+include = ["api*", "fetchers*", "classifier*", "matcher*", "jobs*", "alerts*"]
 
 [tool.setuptools.package-data]
 api = ["static/*.html"]

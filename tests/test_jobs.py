@@ -274,3 +274,14 @@ def test_utc_formatter():
     record.created = datetime(2026, 1, 15, 12, 30, tzinfo=timezone.utc).timestamp()
     assert UTCFormatter("%(asctime)s").format(record) == "2026-01-15T12:30:00Z"
 
+
+
+def test_formatter_redacts_webhook_token():
+    record = logging.LogRecord(
+        "httpx", logging.INFO, "", 0,
+        'HTTP Request: POST %s "HTTP/1.1 204"',
+        ("https://discord.com/api/webhooks/123/sEcr3t-Tok_en",), None,
+    )
+    line = UTCFormatter("%(message)s").format(record)
+    assert "sEcr3t" not in line
+    assert "/api/webhooks/123/[redacted]" in line

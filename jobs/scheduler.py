@@ -13,12 +13,15 @@ from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from alerts.checks import run_watchdog
 from config import get_settings
 from jobs.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
 
 JOB_ID = "pipeline"
+WATCHDOG_JOB_ID = "watchdog"
+WATCHDOG_INTERVAL_MINUTES = 5
 
 
 def _run_job(stop_event: threading.Event) -> None:
@@ -45,6 +48,16 @@ def build_scheduler(
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc),
+    )
+    # Separate from the pipeline job so a hung or crashing run still gets noticed.
+    scheduler.add_job(
+        run_watchdog,
+        "interval",
+        minutes=WATCHDOG_INTERVAL_MINUTES,
+        kwargs={"started_at": datetime.now(timezone.utc)},
+        id=WATCHDOG_JOB_ID,
+        max_instances=1,
+        coalesce=True,
     )
     return scheduler
 
@@ -75,7 +88,8 @@ def run_scheduled() -> None:
     scheduler = build_scheduler(stop_event)
     scheduler.start()
     logger.info(
-        "Scheduler started: pipeline every %s min", get_settings().pipeline_interval_minutes
+        "Scheduler started: pipeline every %s min, watchdog every %s min",
+        get_settings().pipeline_interval_minutes, WATCHDOG_INTERVAL_MINUTES,
     )
     _wait(lambda: not stop_event.is_set(), stop_event)
     logger.info("Shutting down scheduler; waiting for the current run")

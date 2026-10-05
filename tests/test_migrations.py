@@ -31,6 +31,7 @@ def test_upgrade_head_creates_schema(tmp_path, monkeypatch):
         "incident_items",
         "pipeline_runs",
         "job_locks",
+        "alerts_sent",
     }
     assert "ix_raw_items_status" in {i["name"] for i in insp.get_indexes("raw_items")}
     assert "ix_incidents_occurred_at" in {
@@ -259,6 +260,22 @@ def test_time_precision_backfill(tmp_path, monkeypatch):
         assert "time_precision" not in {
             c["name"] for c in inspect(engine).get_columns("classifications")
         }
+        engine.dispose()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_alerts_sent_upgrade_and_downgrade(tmp_path, monkeypatch):
+    cfg, db_url = _alembic(tmp_path, monkeypatch)
+    try:
+        command.upgrade(cfg, "head")
+        engine = create_engine(db_url)
+        cols = {c["name"] for c in inspect(engine).get_columns("alerts_sent")}
+        assert cols == {"key", "last_sent_at", "resolved_at"}
+        engine.dispose()
+        command.downgrade(cfg, "c9a4e2d7f813")
+        engine = create_engine(db_url)
+        assert "alerts_sent" not in inspect(engine).get_table_names()
         engine.dispose()
     finally:
         get_settings.cache_clear()

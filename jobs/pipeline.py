@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from alerts.checks import check_after_run
 from classifier.classify import classify_pending
 from fetchers.runner import run_fetchers
 from jobs import lock
@@ -33,20 +34,41 @@ def _status(errors: dict[str, str], step_count: int) -> str:
     return "failed" if len(errors) == step_count else "partial"
 
 
+AlertCheck = Callable[[Session, PipelineRun], None]
+
+
 def run_pipeline(
     session_factory: Callable[[], Session] | sessionmaker | None = None,
     steps: Sequence[tuple[str, Step]] | None = None,
     stop_event: threading.Event | None = None,
+    alert_check: AlertCheck | None = None,
 ) -> PipelineRun | None:
     """Run each step in order, each with its own session. A failed step is logged and
     recorded; later steps still run. If stop_event is set, the current step finishes
-    and the rest are skipped. Returns the finished PipelineRun, or None if another run
-    holds the lock (nothing is recorded then)."""
+    and the rest are skipped. Once the lock is released, alert_check (default:
+    alerts.checks.check_after_run) runs in its own session; its errors are only logged.
+    Returns the finished PipelineRun, or None if another run holds the lock (nothing is
+    recorded or checked then)."""
     if session_factory is None:
         from db import SessionLocal
 
         session_factory = SessionLocal
     steps = STEPS if steps is None else steps
+    run = _run_locked(session_factory, steps, stop_event)
+    if run is not None:
+        _check_alerts(session_factory, run, alert_check or check_after_run)
+    return run
+
+
+def _check_alerts(session_factory, run: PipelineRun, alert_check: AlertCheck) -> None:
+    try:
+        with session_factory() as session:
+            alert_check(session, run)
+    except Exception:
+        logger.exception("Alert checks failed after run %d; ignoring", run.id)
+
+
+def _run_locked(session_factory, steps, stop_event) -> PipelineRun | None:
     owner = uuid.uuid4().hex
 
     with session_factory() as meta:
