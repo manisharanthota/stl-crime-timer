@@ -1035,15 +1035,20 @@ def eval_env(monkeypatch, tmp_path):
     cases.write_text(EVAL_CASES)
     cache = tmp_path / "cache.json"
     llms = []
+    llms_settings = []
 
     def make(*responses):
         llm = FakeLLM(*responses)
         llms.append(llm)
-        monkeypatch.setattr(eval_script, "get_llm_client", lambda: llm)
+        def client(settings=None):
+            llms_settings.append(settings)
+            return llm
+
+        monkeypatch.setattr(eval_script, "get_llm_client", client)
         return llm
 
     monkeypatch.setattr(eval_script, "make_limiter", lambda sleep: RateLimiter(0))
-    return SimpleNamespace(cases=cases, cache=cache, make=make)
+    return SimpleNamespace(cases=cases, cache=cache, make=make, settings=llms_settings)
 
 
 def test_eval_fixture_has_24_labeled_cases():
@@ -1119,3 +1124,24 @@ def test_eval_skips_was_shooting_when_unlabeled(eval_env, capsys):
     eval_env.make(echo())
     eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
     assert "was_shooting:" not in capsys.readouterr().out
+
+
+def test_eval_model_flag_overrides_gemini_model(eval_env, capsys):
+    llm = eval_env.make(echo())
+    llm.model = "backup-model"
+    eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache), "--model", "backup-model"])
+    assert eval_env.settings[-1].gemini_model == "backup-model"
+    assert "Model: backup-model" in capsys.readouterr().out
+
+
+def test_eval_defaults_to_gemini_model(eval_env, monkeypatch):
+    from config import get_settings
+
+    monkeypatch.setenv("GEMINI_MODEL", "primary-model")
+    get_settings.cache_clear()
+    try:
+        eval_env.make(echo())
+        eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
+        assert eval_env.settings[-1].gemini_model == "primary-model"
+    finally:
+        get_settings.cache_clear()

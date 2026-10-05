@@ -25,7 +25,7 @@ python -m classifier                     # classify all status=new raw_items onc
 python -m matcher                        # link all unlinked in-STL crime classifications into incidents once
 python -m jobs once                      # run fetch -> classify -> match once (live network + LLM)
 python -m jobs schedule                  # run it every PIPELINE_INTERVAL_MINUTES; Ctrl+C stops gracefully
-python -m classifier.eval                # score the live LLM on tests/fixtures/eval_headlines.yaml (manual, not pytest; cached, --no-cache to bypass)
+python -m classifier.eval                # score the live LLM on tests/fixtures/eval_headlines.yaml (manual, not pytest; cached, --no-cache to bypass; --model NAME to score another model, e.g. the fallback)
 ```
 
 ## Architecture

@@ -24,6 +24,7 @@ from classifier.llm import get_llm_client
 from classifier.prefilter import prefilter
 from classifier.prompt import PROMPT_VERSION
 from classifier.schema import ClassifierOutput
+from config import get_settings
 from models import RawItem
 from timeutil import to_local, to_utc
 
@@ -108,13 +109,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_PATH)
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     parser.add_argument(
+        "--model",
+        help="model to evaluate instead of GEMINI_MODEL (e.g. the GEMINI_FALLBACK_MODEL)",
+    )
+    parser.add_argument(
         "--no-cache", action="store_true",
         help="ignore cached results (fresh results are still saved)",
     )
     args = parser.parse_args(argv)
 
     cases = load_cases(args.path)
-    llm = get_llm_client()
+    settings = get_settings()
+    if args.model:
+        settings = settings.model_copy(update={"gemini_model": args.model})
+    llm = get_llm_client(settings)
+    print(f"Model: {llm.model} (prompt {PROMPT_VERSION})")
     cache = load_cache(args.cache)
     preds, error = predict_all(cases, llm, cache, use_cache=not args.no_cache)
     save_cache(args.cache, cache)
