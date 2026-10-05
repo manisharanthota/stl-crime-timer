@@ -34,6 +34,7 @@ def add(session):
         was_shooting=False,
         neighborhood=None,
         is_followup=False,
+        time_precision="exact",
     ) -> RawItem:
         n = next(_ids)
         url = f"https://example.com/story/{n}"
@@ -55,6 +56,7 @@ def add(session):
                 was_shooting=was_shooting,
                 in_stl=in_stl,
                 occurred_at=occurred_at,
+                time_precision=time_precision,
                 location=location,
                 neighborhood=neighborhood,
                 is_followup=is_followup,
@@ -467,7 +469,7 @@ def test_refresh_takes_reported_time_from_reclassified_item(session, add):
     assert match_pending(session, threshold=85)["refreshed"] == 0  # idempotent
 
 
-def test_refresh_keeps_earliest_reported_time(session, add):
+def test_refresh_uses_earliest_exact_time_across_items(session, add):
     a = add(occurred_at=T0)
     add(occurred_at=T0 + timedelta(hours=2))
     match_pending(session, threshold=85)
@@ -476,9 +478,61 @@ def test_refresh_keeps_earliest_reported_time(session, add):
     match_pending(session, threshold=85)
     assert incidents(session)[0].occurred_at == T0 - timedelta(hours=1)
 
-    reclassify(session, a, occurred_at=T0 + timedelta(hours=5))  # later: ignored
+    # Corrected to later than the other item: the other item's time is now earliest.
+    reclassify(session, a, occurred_at=T0 + timedelta(hours=5))
     match_pending(session, threshold=85)
-    assert incidents(session)[0].occurred_at == T0 - timedelta(hours=1)
+    assert incidents(session)[0].occurred_at == T0 + timedelta(hours=2)
+
+
+MIDNIGHT = datetime(2026, 10, 2, 5, 0, tzinfo=timezone.utc)  # 00:00 CDT
+
+
+def test_exact_time_beats_guessed_midnight_on_merge(session, add):
+    add(occurred_at=MIDNIGHT, time_precision="date_only")
+    add(occurred_at=MIDNIGHT + timedelta(minutes=40))
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert len(inc.raw_items) == 2
+    assert (inc.occurred_at, inc.time_estimated) == (MIDNIGHT + timedelta(minutes=40), False)
+
+
+def test_date_only_incident_is_estimated_and_uses_24h_window(session, add):
+    add(occurred_at=MIDNIGHT, time_precision="date_only")
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].time_estimated is True
+    add(occurred_at=MIDNIGHT + timedelta(hours=20))  # exact, 20h later
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (MIDNIGHT + timedelta(hours=20), False)
+
+
+def test_refresh_replaces_guessed_midnight_with_later_exact_time(session, add):
+    a = add(occurred_at=MIDNIGHT)  # stored as exact, like the old midnight guesses
+    add(occurred_at=MIDNIGHT + timedelta(minutes=40))
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].occurred_at == MIDNIGHT
+
+    reclassify(session, a, occurred_at=MIDNIGHT, time_precision="date_only")
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (MIDNIGHT + timedelta(minutes=40), False)
+
+
+def test_refresh_leaves_time_alone_without_exact_times(session, add):
+    a = add(occurred_at=MIDNIGHT)
+    match_pending(session, threshold=85)
+    reclassify(session, a, occurred_at=MIDNIGHT + timedelta(hours=3), time_precision="date_only")
+    assert match_pending(session, threshold=85)["refreshed"] == 0
+    assert incidents(session)[0].occurred_at == MIDNIGHT
+
+
+def test_date_only_followup_is_linked_with_estimated_time(session, add):
+    add(occurred_at=MIDNIGHT, time_precision="date_only", is_followup=True,
+        published_at=MIDNIGHT + timedelta(days=3))
+    counts = match_pending(session, threshold=85)
+    assert counts["created"] == 1
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (MIDNIGHT, True)
 
 
 def test_refresh_turns_on_was_shooting_never_off(session, add):

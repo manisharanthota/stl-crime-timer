@@ -23,6 +23,9 @@ CRIME_TYPES = ("shooting", "burglary", "homicide")
 # merged: folded into another incident (merged_into_id); never counted or matched.
 INCIDENT_STATUSES = ("confirmed", "review", "rejected", "merged")
 PIPELINE_RUN_STATUSES = ("running", "success", "partial", "failed")
+# exact: the item gives a time of day. date_only: only a date or part of day (the
+# time is a guess, e.g. midnight). unknown: no time at all.
+TIME_PRECISIONS = ("exact", "date_only", "unknown")
 
 # Stored as VARCHAR + CHECK so the schema is portable between SQLite and Postgres.
 _enum_opts = {"native_enum": False, "create_constraint": True}
@@ -30,6 +33,7 @@ RawItemStatus = Enum(*RAW_ITEM_STATUSES, name="raw_item_status", **_enum_opts)
 CrimeType = Enum(*CRIME_TYPES, name="crime_type", **_enum_opts)
 IncidentStatus = Enum(*INCIDENT_STATUSES, name="incident_status", **_enum_opts)
 PipelineRunStatus = Enum(*PIPELINE_RUN_STATUSES, name="pipeline_run_status", **_enum_opts)
+TimePrecision = Enum(*TIME_PRECISIONS, name="time_precision", **_enum_opts)
 
 
 def hash_url(url: str) -> str:
@@ -85,6 +89,11 @@ class Classification(Base):
     )
     in_stl: Mapped[bool] = mapped_column(Boolean)
     occurred_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Only "exact" occurred_at values count as reported times; the others are
+    # estimates. Rows written without it (older code, tests) are taken as exact.
+    time_precision: Mapped[str] = mapped_column(
+        TimePrecision, default="exact", server_default="exact"
+    )
     location: Mapped[str | None] = mapped_column(String(500))
     neighborhood: Mapped[str | None] = mapped_column(String(100))
     is_followup: Mapped[bool] = mapped_column(

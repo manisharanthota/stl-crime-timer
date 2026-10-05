@@ -6,7 +6,7 @@ from matcher.neighborhoods import NEIGHBORHOODS
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -38,6 +38,12 @@ Fields of each result:
   around 21:00). For follow-up stories, this is when the original crime happened,
   not when the story was published. Never default to the publish date. null if
   unknown.
+- time_precision: how much of occurred_at the item states.
+  "exact": it gives a clock time ("12:40 a.m.", "around 9:30 p.m.").
+  "date_only": it gives only the day, or a part of the day ("Friday",
+  "early Friday", "Saturday night"); occurred_at is your estimate. If you put
+  00:00 because no time was given, this is date_only.
+  "unknown": no date at all; occurred_at is null.
 - location: the most specific place mentioned (address, intersection, or
   neighborhood), or null.
 - neighborhood: the official City of St. Louis neighborhood where the crime

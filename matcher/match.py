@@ -31,6 +31,11 @@ def _was_shooting(c: Classification) -> bool:
     return bool(c.was_shooting) or c.crime_type == "shooting"
 
 
+def _reported(c: Classification) -> bool:
+    """occurred_at is a stated time of day, not a guess from a date."""
+    return c.occurred_at is not None and c.time_precision == "exact"
+
+
 def _latest_ids():
     """Subquery: the newest classification id of each raw_item."""
     return (
@@ -70,7 +75,8 @@ def _pending(session: Session) -> tuple[list[_Pending], int, int]:
     pending, skipped, skipped_followup = [], 0, 0
     for c, published_at in rows:
         if c.occurred_at is not None:
-            pending.append(_Pending(c, to_utc(c.occurred_at), False))
+            # A date-only time is an estimate, like a published_at fallback.
+            pending.append(_Pending(c, to_utc(c.occurred_at), not _reported(c)))
         elif c.is_followup:
             skipped_followup += 1
         elif published_at is not None:
@@ -137,8 +143,9 @@ def refresh_incidents(session: Session) -> int:
     The matcher only looks at unlinked items, so a re-classified linked item would
     otherwise never reach its incident. From each linked item's newest St. Louis
     crime classification:
-    - the earliest reported occurred_at replaces an estimated time, or a later
-      reported one (reported times only move earlier, as in merges);
+    - if any has an exact occurred_at, the incident takes the earliest exact one
+      (even if later: a stated 00:40 replaces a guessed midnight) and stops being
+      estimated; otherwise its time is left alone;
     - was_shooting is turned on, never off;
     - an empty location/neighborhood is filled.
     Rejected and merged incidents are left alone. Returns how many changed.
@@ -165,12 +172,10 @@ def refresh_incidents(session: Session) -> int:
             incident.occurred_at, incident.time_estimated, incident.was_shooting,
             incident.location, incident.neighborhood,
         )
-        reported = [to_utc(c.occurred_at) for c in classifications if c.occurred_at]
+        reported = [to_utc(c.occurred_at) for c in classifications if _reported(c)]
         if reported:
-            earliest = min(reported)
-            if incident.time_estimated or earliest < to_utc(incident.occurred_at):
-                incident.occurred_at = earliest
-                incident.time_estimated = False
+            incident.occurred_at = min(reported)
+            incident.time_estimated = False
         if any(_was_shooting(c) for c in classifications):
             incident.was_shooting = True
         if incident.location is None:

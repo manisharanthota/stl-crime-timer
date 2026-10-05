@@ -218,3 +218,47 @@ def test_migration_reports_foreign_key_violations(tmp_path, monkeypatch):
         assert "incident_items" in str(info.value)
     finally:
         get_settings.cache_clear()
+
+
+def test_time_precision_backfill(tmp_path, monkeypatch):
+    cfg, db_url = _alembic(tmp_path, monkeypatch)
+    try:
+        command.upgrade(cfg, "b3d8f1c47e26")  # before time_precision
+        engine = create_engine(db_url)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO sources (id, name, url, type) VALUES (1, 's', 'https://s.example', 'rss')"
+            ))
+            conn.execute(text(
+                "INSERT INTO raw_items (id, source_id, url, url_hash, title)"
+                " VALUES (1, 1, 'https://s.example/1', 'h1', 't')"
+            ))
+            for cid, occurred_at in [
+                (1, None),
+                (2, "'2026-10-02 05:00:00.000000'"),  # 00:00 CDT: a guessed midnight
+                (3, "'2026-10-02 05:40:00.000000'"),  # 00:40 CDT
+                (4, "'2026-01-15 06:00:00.000000'"),  # 00:00 CST (winter offset)
+                (5, "'2026-10-02 00:00:00.000000'"),  # 00:00 UTC = 19:00 CDT
+            ]:
+                conn.execute(text(
+                    "INSERT INTO classifications (id, raw_item_id, is_crime, in_stl, occurred_at,"
+                    " confidence, model, prompt_version)"
+                    f" VALUES ({cid}, 1, 1, 1, {occurred_at or 'NULL'}, 0.9, 'm', 'v4')"
+                ))
+        engine.dispose()
+
+        command.upgrade(cfg, "head")
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            got = dict(conn.execute(text("SELECT id, time_precision FROM classifications")).all())
+        engine.dispose()
+        assert got == {1: "unknown", 2: "date_only", 3: "exact", 4: "date_only", 5: "exact"}
+
+        command.downgrade(cfg, "b3d8f1c47e26")
+        engine = create_engine(db_url)
+        assert "time_precision" not in {
+            c["name"] for c in inspect(engine).get_columns("classifications")
+        }
+        engine.dispose()
+    finally:
+        get_settings.cache_clear()

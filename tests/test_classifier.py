@@ -204,7 +204,7 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == PROMPT_VERSION == "v4"
+    assert c.prompt_version == PROMPT_VERSION == "v5"
     assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
@@ -774,10 +774,9 @@ def test_neighborhood_and_followup_saved(session, make_item, run):
     assert (c.neighborhood, c.is_followup) == ("West End", True)
 
 
-def test_prompt_v4_has_followup_rule_and_neighborhoods():
+def test_prompt_has_followup_rule_and_neighborhoods():
     from matcher.neighborhoods import NEIGHBORHOODS
 
-    assert PROMPT_VERSION == "v4"
     assert "within 7 days" in SYSTEM_PROMPT
     assert "is_followup" in SYSTEM_PROMPT
     assert "charges filed" in SYSTEM_PROMPT
@@ -789,6 +788,37 @@ def test_official_neighborhood_list():
 
     assert len(NEIGHBORHOODS) == len(set(NEIGHBORHOODS)) == 79
     assert all(normalize_neighborhood(name) == name for name in NEIGHBORHOODS)
+
+
+@pytest.mark.parametrize("precision", ["exact", "date_only", "unknown"])
+def test_schema_keeps_time_precision(precision):
+    out = ClassifierOutput.model_validate({**VALID, "time_precision": precision})
+    assert out.time_precision == precision
+
+
+def test_schema_time_precision_defaults_unknown_and_is_unknown_without_time():
+    assert ClassifierOutput.model_validate(VALID).time_precision == "unknown"
+    out = ClassifierOutput.model_validate(
+        {**VALID, "occurred_at": None, "time_precision": "exact"}
+    )
+    assert out.time_precision == "unknown"
+
+
+def test_schema_rejects_bad_time_precision():
+    with pytest.raises(ValidationError):
+        ClassifierOutput.model_validate({**VALID, "time_precision": "approximate"})
+
+
+def test_time_precision_saved(session, make_item, run):
+    make_item()
+    run(FakeLLM(echo({1: {"time_precision": "date_only"}})))
+    assert classifications(session)[0].time_precision == "date_only"
+
+
+def test_prompt_v5_explains_time_precision():
+    assert PROMPT_VERSION == "v5"
+    assert "time_precision" in SYSTEM_PROMPT
+    assert "date_only" in SYSTEM_PROMPT and "00:00" in SYSTEM_PROMPT
 
 
 def test_batch_result_requires_raw_item_id():

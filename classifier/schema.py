@@ -16,6 +16,9 @@ class ClassifierOutput(BaseModel):
     was_shooting: bool = False
     in_stl: bool
     occurred_at: datetime | None = None
+    # How much of occurred_at the item actually states; only "exact" is a reported
+    # time, so a guessed midnight never beats a real time.
+    time_precision: Literal["exact", "date_only", "unknown"] = "unknown"
     location: str | None = None
     # Official neighborhood name; anything that isn't one becomes None.
     neighborhood: str | None = None
@@ -41,6 +44,8 @@ class ClassifierOutput(BaseModel):
             self.is_followup = False
         elif self.crime_type is None:
             raise ValueError("crime_type is required when is_crime is true")
+        if self.occurred_at is None:
+            self.time_precision = "unknown"
         if self.crime_type == "shooting":
             self.was_shooting = True
         elif self.crime_type != "homicide":
