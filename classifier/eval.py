@@ -30,7 +30,8 @@ from timeutil import to_local, to_utc
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = ROOT / "tests" / "fixtures" / "eval_headlines.yaml"
 DEFAULT_CACHE = ROOT / ".eval_cache.json"
-FIELDS = ("is_crime", "crime_type", "in_stl")
+# was_shooting is only scored on cases that label it (the crime cases).
+FIELDS = ("is_crime", "crime_type", "in_stl", "was_shooting")
 
 
 def load_cases(path: Path) -> list[dict]:
@@ -132,7 +133,7 @@ def main(argv: list[str] | None = None) -> None:
         misses = []
         for f in FIELDS:
             want = expected.get(f)
-            if f == "in_stl" and want is None:
+            if f not in expected or (f == "in_stl" and want is None):
                 continue
             field_total[f] += 1
             got = getattr(pred, f)

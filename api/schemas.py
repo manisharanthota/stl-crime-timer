@@ -31,6 +31,7 @@ class LastIncident(BaseModel):
     seconds_since: int
     location: str | None
     time_estimated: bool
+    was_shooting: bool
 
 
 class TimerEntry(BaseModel):
@@ -56,6 +57,7 @@ class IncidentOut(BaseModel):
     crime_type: str
     occurred_at: UTC
     time_estimated: bool
+    was_shooting: bool
     location: str | None
     status: str
     articles: list[ArticleOut]

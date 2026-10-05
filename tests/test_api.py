@@ -32,6 +32,7 @@ def add(session_factory):
         status="confirmed",
         location="Grand Blvd",
         articles=0,
+        was_shooting=None,
     ):
         with session_factory() as s:
             incident = Incident(
@@ -39,6 +40,8 @@ def add(session_factory):
                 occurred_at=NOW - timedelta(hours=hours_ago),
                 location=location,
                 status=status,
+                # Like the matcher: a shooting always has was_shooting.
+                was_shooting=crime_type == "shooting" if was_shooting is None else was_shooting,
             )
             s.add(incident)
             s.flush()
@@ -96,11 +99,43 @@ def test_timer_only_confirmed_counts(client, add):
         "seconds_since": 3 * 3600,
         "location": "Delmar",
         "time_estimated": False,
+        "was_shooting": False,
     }
     types = by_type(body)
     assert types["shooting"]["last"]["incident_id"] == shooting
     assert types["shooting"]["last"]["seconds_since"] == 10 * 3600
     assert types["burglary"]["last"]["incident_id"] == burglary
+    assert types["homicide"]["last"] is None
+
+
+def test_fatal_shooting_counts_for_shooting_and_homicide(client, add):
+    add("shooting", hours_ago=20)
+    fatal = add("homicide", hours_ago=5, was_shooting=True)
+
+    types = by_type(client.get("/timer").json())
+    assert types["shooting"]["last"]["incident_id"] == fatal
+    assert types["shooting"]["last"]["crime_type"] == "homicide"
+    assert types["shooting"]["last"]["was_shooting"] is True
+    assert types["shooting"]["last"]["seconds_since"] == 5 * 3600
+    assert types["homicide"]["last"]["incident_id"] == fatal
+
+
+def test_homicide_without_shooting_not_a_shooting(client, add):
+    shooting = add("shooting", hours_ago=20)
+    stabbing = add("homicide", hours_ago=5, was_shooting=False)
+
+    types = by_type(client.get("/timer").json())
+    assert types["shooting"]["last"]["incident_id"] == shooting
+    assert types["homicide"]["last"]["incident_id"] == stabbing
+
+
+def test_rejecting_fatal_shooting_updates_shooting_timer(client, add):
+    shooting = add("shooting", hours_ago=20)
+    fatal = add("homicide", hours_ago=5, was_shooting=True)
+    client.post(f"/admin/incidents/{fatal}/reject", headers=AUTH)
+
+    types = by_type(client.get("/timer").json())
+    assert types["shooting"]["last"]["incident_id"] == shooting
     assert types["homicide"]["last"] is None
 
 
@@ -152,6 +187,7 @@ def test_incidents_lists_confirmed_with_articles(client, add):
     assert first["crime_type"] == "shooting"
     assert first["occurred_at"] == "2026-10-05T10:00:00Z"
     assert first["status"] == "confirmed"
+    assert first["was_shooting"] is True
     assert first["articles"] == [
         {
             "title": "Story 0",
@@ -219,6 +255,21 @@ def test_stats_gap_calculation(client, add):
     assert types["burglary"]["longest"]["start_incident_id"] == b1
     assert types["homicide"]["longest"]["seconds"] == 10 * 3600
     assert s1 and s2  # used only to shape the gaps
+
+
+def test_stats_fatal_shooting_counts_as_shooting(client, add):
+    add("shooting", hours_ago=100)
+    fatal = add("homicide", hours_ago=60, was_shooting=True)
+    add("shooting", hours_ago=50)
+    add("homicide", hours_ago=10, was_shooting=False)  # not a shooting
+
+    types = by_type(client.get("/stats").json())
+    # Shootings: 100->60 (40h, ends at the fatal shooting), 60->50, 50->now (50h ongoing).
+    assert types["shooting"]["longest"]["seconds"] == 50 * 3600
+    assert types["shooting"]["longest"]["ongoing"] is True
+    # Homicides: 60->10 (50h), 10->now (10h).
+    homicide = types["homicide"]["longest"]
+    assert (homicide["seconds"], homicide["start_incident_id"]) == (50 * 3600, fatal)
 
 
 def test_stats_closed_gap_beats_short_ongoing(client, add):

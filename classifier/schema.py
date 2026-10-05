@@ -11,6 +11,8 @@ from timeutil import to_utc
 class ClassifierOutput(BaseModel):
     is_crime: bool
     crime_type: Literal["shooting", "burglary", "homicide"] | None = None
+    # Someone was shot; lets a fatal shooting (crime_type=homicide) count as a shooting too.
+    was_shooting: bool = False
     in_stl: bool
     occurred_at: datetime | None = None
     location: str | None = None
@@ -28,6 +30,10 @@ class ClassifierOutput(BaseModel):
             self.crime_type = None
         elif self.crime_type is None:
             raise ValueError("crime_type is required when is_crime is true")
+        if self.crime_type == "shooting":
+            self.was_shooting = True
+        elif self.crime_type != "homicide":
+            self.was_shooting = False
         return self
 
 

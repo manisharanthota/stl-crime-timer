@@ -1,39 +1,40 @@
 # Hand-labeled headlines for `python -m classifier.eval` (runs the real LLM; not used by pytest).
 # expected.in_stl: null means "don't score this field".
+# expected.was_shooting is labeled on the crime cases only; unlabeled cases are not scored on it.
 - title: "Man shot and wounded in north St. Louis' Walnut Park neighborhood"
   body: "A 34-year-old man was shot in the leg Sunday night in the 5600 block of Riverview Boulevard, St. Louis police said. He was taken to a hospital in stable condition."
   published_at: "2026-09-28T07:15:00-05:00"
-  expected: {is_crime: true, crime_type: shooting, in_stl: true}
+  expected: {is_crime: true, crime_type: shooting, in_stl: true, was_shooting: true}
 
 - title: "Teen killed in shooting near Tower Grove Park, police say"
   body: "A 17-year-old boy was fatally shot late Friday on Arsenal Street in south St. Louis. Homicide detectives are investigating."
   published_at: "2026-09-26T23:40:00-05:00"
-  expected: {is_crime: true, crime_type: homicide, in_stl: true}
+  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: true}
 
 - title: "Woman found dead with gunshot wounds in Dutchtown home"
   body: "Officers responding to a call for help Tuesday morning found a woman dead inside a home in the 3800 block of Virginia Avenue. Police are treating the death as a homicide."
   published_at: "2026-09-29T11:02:00-05:00"
-  expected: {is_crime: true, crime_type: homicide, in_stl: true}
+  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: true}
 
 - title: "Burglars smash into Soulard bar overnight, steal cash register"
   body: "The owner of a bar on Russell Boulevard in Soulard says thieves broke in through a back door early Wednesday. St. Louis police are investigating the burglary."
   published_at: "2026-09-30T09:30:00-05:00"
-  expected: {is_crime: true, crime_type: burglary, in_stl: true}
+  expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false}
 
 - title: "Gunfire erupts outside downtown St. Louis nightclub; two hurt"
   body: "Two people were shot early Saturday on Washington Avenue downtown after a fight spilled out of a club, police said."
   published_at: "2026-09-27T03:50:00-05:00"
-  expected: {is_crime: true, crime_type: shooting, in_stl: true}
+  expected: {is_crime: true, crime_type: shooting, in_stl: true, was_shooting: true}
 
 - title: "Break-in reported at The Hill restaurant; suspects caught on camera"
   body: "Surveillance video shows two men forcing open the front door of a restaurant on Marconi Avenue on The Hill early Thursday."
   published_at: "2026-10-01T10:10:00-05:00"
-  expected: {is_crime: true, crime_type: burglary, in_stl: true}
+  expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false}
 
 - title: "Man stabbed and killed in Fox Park; suspect in custody"
   body: "A 41-year-old man died after being stabbed during an argument Monday evening in the 2700 block of Shenandoah Avenue in St. Louis."
   published_at: "2026-09-29T06:45:00-05:00"
-  expected: {is_crime: true, crime_type: homicide, in_stl: true}
+  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: false}
 
 - title: "Ferguson police investigate shooting that left one man wounded"
   body: "A man was shot Saturday afternoon on West Florissant Avenue in Ferguson, police said."

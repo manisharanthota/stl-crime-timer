@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from api.schemas import (
@@ -20,6 +20,21 @@ from models import CRIME_TYPES, Incident, RawItem
 CONFIRMED = Incident.status == "confirmed"
 
 
+def _counts_as_sql(crime_type: str):
+    """Filter for incidents that count toward a crime type's timer. A fatal shooting
+    is stored as a homicide with was_shooting=True and counts as a shooting too."""
+    if crime_type == "shooting":
+        return or_(Incident.crime_type == "shooting", Incident.was_shooting.is_(True))
+    return Incident.crime_type == crime_type
+
+
+def _counts_as(crime_type: str, incident_type: str, was_shooting: bool) -> bool:
+    """Python twin of _counts_as_sql(), for rows already loaded."""
+    if crime_type == "shooting":
+        return incident_type == "shooting" or was_shooting
+    return incident_type == crime_type
+
+
 def _seconds(start: datetime, end: datetime) -> int:
     # Clamped: a bad extraction can put occurred_at in the future.
     return max(0, int((end - start).total_seconds()))
@@ -30,7 +45,7 @@ def timer(session: Session, now: datetime) -> TimerResponse:
     for crime_type in CRIME_TYPES:
         incident = session.scalars(
             select(Incident)
-            .where(CONFIRMED, Incident.crime_type == crime_type)
+            .where(CONFIRMED, _counts_as_sql(crime_type))
             .order_by(Incident.occurred_at.desc(), Incident.id.desc())
             .limit(1)
         ).first()
@@ -43,6 +58,7 @@ def timer(session: Session, now: datetime) -> TimerResponse:
                 seconds_since=_seconds(incident.occurred_at, now),
                 location=incident.location,
                 time_estimated=incident.time_estimated,
+                was_shooting=incident.was_shooting,
             )
         by_type.append(TimerEntry(crime_type=crime_type, last=last))
 
@@ -63,6 +79,7 @@ def incident_out(incident: Incident) -> IncidentOut:
         crime_type=incident.crime_type,
         occurred_at=incident.occurred_at,
         time_estimated=incident.time_estimated,
+        was_shooting=incident.was_shooting,
         location=incident.location,
         status=incident.status,
         articles=[
@@ -140,7 +157,7 @@ def _longest_gap(rows: list[tuple[int, datetime]], now: datetime) -> Gap | None:
 
 def stats(session: Session, now: datetime) -> StatsResponse:
     rows = session.execute(
-        select(Incident.id, Incident.crime_type, Incident.occurred_at)
+        select(Incident.id, Incident.crime_type, Incident.was_shooting, Incident.occurred_at)
         .where(CONFIRMED)
         .order_by(Incident.occurred_at, Incident.id)
     ).all()
@@ -149,7 +166,12 @@ def stats(session: Session, now: datetime) -> StatsResponse:
         GapEntry(
             crime_type=t,
             longest=_longest_gap(
-                [(r.id, r.occurred_at) for r in rows if r.crime_type == t], now
+                [
+                    (r.id, r.occurred_at)
+                    for r in rows
+                    if _counts_as(t, r.crime_type, r.was_shooting)
+                ],
+                now,
             ),
         )
         for t in CRIME_TYPES

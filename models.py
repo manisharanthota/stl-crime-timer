@@ -78,6 +78,10 @@ class Classification(Base):
     raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"))
     is_crime: Mapped[bool] = mapped_column(Boolean)
     crime_type: Mapped[str | None] = mapped_column(CrimeType)
+    # Someone was shot (always true for crime_type=shooting; may be true for homicide).
+    was_shooting: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     in_stl: Mapped[bool] = mapped_column(Boolean)
     occurred_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     location: Mapped[str | None] = mapped_column(String(500))
@@ -98,6 +102,10 @@ class Incident(Base):
     location: Mapped[str | None] = mapped_column(String(500))
     # True while every linked item lacked occurred_at (time is a published_at fallback).
     time_estimated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
+    # True if any linked item was a shooting; survives a shooting -> homicide upgrade.
+    was_shooting: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0"
     )
     status: Mapped[str] = mapped_column(

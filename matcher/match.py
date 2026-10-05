@@ -24,6 +24,10 @@ _COMPATIBLE_TYPES = {
 }
 
 
+def _was_shooting(c: Classification) -> bool:
+    return bool(c.was_shooting) or c.crime_type == "shooting"
+
+
 @dataclass
 class _Pending:
     classification: Classification
@@ -94,6 +98,8 @@ def _merge(incident: Incident, item: _Pending) -> None:
     c = item.classification
     if {incident.crime_type, c.crime_type} == {"shooting", "homicide"}:
         incident.crime_type = "homicide"
+    if _was_shooting(c):
+        incident.was_shooting = True
     current = to_utc(incident.occurred_at)
     if incident.time_estimated and not item.estimated:
         # A reported time beats a published_at fallback, even if later.
@@ -130,6 +136,7 @@ def match_pending(session: Session, *, threshold: float | None = None) -> dict[s
                 occurred_at=item.occurred_at,
                 location=c.location,
                 time_estimated=item.estimated,
+                was_shooting=_was_shooting(c),
                 status="confirmed" if c.confidence >= CONFIRM_THRESHOLD else "review",
             )
             session.add(incident)

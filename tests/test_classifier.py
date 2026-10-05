@@ -203,7 +203,8 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == "v2"
+    assert c.prompt_version == "v3"
+    assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
     assert json.loads(user)[0]["title"] == "Man shot in Walnut Park"
@@ -464,6 +465,41 @@ def test_schema_offset_time_converted_to_utc():
     assert out.occurred_at == datetime(2026, 1, 16, 3, tzinfo=timezone.utc)
 
 
+def test_schema_shooting_implies_was_shooting():
+    out = ClassifierOutput.model_validate({**VALID, "was_shooting": False})
+    assert out.was_shooting is True
+
+
+@pytest.mark.parametrize("was_shooting", [True, False])
+def test_schema_homicide_keeps_was_shooting(was_shooting):
+    out = ClassifierOutput.model_validate(
+        {**VALID, "crime_type": "homicide", "was_shooting": was_shooting}
+    )
+    assert out.was_shooting is was_shooting
+
+
+def test_schema_homicide_was_shooting_defaults_false():
+    out = ClassifierOutput.model_validate({**VALID, "crime_type": "homicide"})
+    assert out.was_shooting is False
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"crime_type": "burglary"}, {"is_crime": False, "crime_type": None}]
+)
+def test_schema_clears_was_shooting_for_burglary_and_non_crime(overrides):
+    out = ClassifierOutput.model_validate({**VALID, **overrides, "was_shooting": True})
+    assert out.was_shooting is False
+
+
+def test_fatal_shooting_saved_as_homicide_with_was_shooting(session, make_item, run):
+    make_item("Teen killed in shooting", "Fatally shot on Arsenal Street.")
+    llm = FakeLLM(echo({1: {"crime_type": "homicide", "was_shooting": True}}))
+    run(llm)
+    [c] = classifications(session)
+    assert (c.crime_type, c.was_shooting) == ("homicide", True)
+    assert "was_shooting" in llm.calls[0][0]
+
+
 def test_batch_result_requires_raw_item_id():
     with pytest.raises(ValidationError):
         BatchResult.model_validate(VALID)
@@ -616,6 +652,13 @@ def test_cli_prints_counts(monkeypatch, capsys, stopped):
 
 # --- eval script -------------------------------------------------------------
 
+EVAL_CASES_SHOT = (
+    "- title: Teen killed in shooting\n"
+    "  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: true}\n"
+    "- title: Man stabbed and killed\n"
+    "  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: false}\n"
+)
+
 EVAL_CASES = (
     "- title: Man shot in Walnut Park\n"
     "  published_at: '2026-09-28T07:15:00-05:00'\n"
@@ -648,7 +691,10 @@ def test_eval_fixture_has_20_labeled_cases():
     cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
     assert len(cases) == 20
     for case in cases:
-        assert set(case["expected"]) == {"is_crime", "crime_type", "in_stl"}
+        expected = case["expected"]
+        assert set(expected) - {"was_shooting"} == {"is_crime", "crime_type", "in_stl"}
+        # was_shooting is labeled on exactly the crime cases.
+        assert ("was_shooting" in expected) == expected["is_crime"]
 
 
 def test_eval_batches_and_scores(eval_env, capsys):
@@ -688,3 +734,23 @@ def test_eval_quota_stop_reports_partial(eval_env, capsys):
     out = capsys.readouterr().out
     assert "daily quota exhausted" in out
     assert "2 case(s) not scored" in out
+
+
+def test_eval_scores_was_shooting_when_labeled(eval_env, capsys):
+    eval_env.cases.write_text(EVAL_CASES_SHOT)
+    # Both predicted as fatal shootings: right for case 0, wrong for the stabbing.
+    eval_env.make(echo({0: {"crime_type": "homicide", "was_shooting": True},
+                        1: {"crime_type": "homicide", "was_shooting": True}}))
+
+    eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
+
+    out = capsys.readouterr().out
+    assert "was_shooting: want False, got True" in out
+    assert "was_shooting: 1/2 (50%)" in out
+    assert "Overall: 1/2 (50%)" in out
+
+
+def test_eval_skips_was_shooting_when_unlabeled(eval_env, capsys):
+    eval_env.make(echo())
+    eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
+    assert "was_shooting:" not in capsys.readouterr().out

@@ -28,6 +28,7 @@ def add(session):
         is_crime=True,
         in_stl=True,
         published_at=None,
+        was_shooting=False,
     ) -> RawItem:
         n = next(_ids)
         url = f"https://example.com/story/{n}"
@@ -46,6 +47,7 @@ def add(session):
                 raw_item_id=item.id,
                 is_crime=is_crime,
                 crime_type=crime_type if is_crime else None,
+                was_shooting=was_shooting,
                 in_stl=in_stl,
                 occurred_at=occurred_at,
                 location=location,
@@ -129,16 +131,45 @@ def test_shooting_then_homicide_upgrades(session, add):
     match_pending(session, threshold=85)
     [inc] = incidents(session)
     assert inc.crime_type == "homicide"
+    assert inc.was_shooting is True
     assert len(inc.raw_items) == 2
 
 
 def test_homicide_then_shooting_stays_homicide(session, add):
     add(crime_type="homicide")
     match_pending(session, threshold=85)
+    assert incidents(session)[0].was_shooting is False
     add(crime_type="shooting", occurred_at=T0 + timedelta(hours=1))
     match_pending(session, threshold=85)
     [inc] = incidents(session)
     assert inc.crime_type == "homicide"
+    assert inc.was_shooting is True
+    assert len(inc.raw_items) == 2
+
+
+@pytest.mark.parametrize(
+    "crime_type, was_shooting, expected",
+    [
+        ("shooting", False, True),  # a v1/v2 classification without the flag
+        ("shooting", True, True),
+        ("homicide", True, True),
+        ("homicide", False, False),
+        ("burglary", False, False),
+    ],
+)
+def test_new_incident_was_shooting(session, add, crime_type, was_shooting, expected):
+    add(crime_type=crime_type, was_shooting=was_shooting)
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert inc.was_shooting is expected
+
+
+def test_was_shooting_kept_when_unshot_homicide_merges(session, add):
+    add(crime_type="homicide", was_shooting=True)
+    add(crime_type="homicide", occurred_at=T0 + timedelta(hours=1))
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert inc.was_shooting is True
     assert len(inc.raw_items) == 2
 
 

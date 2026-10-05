@@ -129,7 +129,8 @@
         " without a shooting, burglary, or killing",
       );
       $("overall-meta").textContent =
-        `Last: ${LABEL[overall.crime_type].toLowerCase()} ${when(overall.occurred_at, overall.time_estimated)}` +
+        `Last: ${(overall.crime_type === "homicide" && overall.was_shooting
+          ? "fatal shooting" : LABEL[overall.crime_type].toLowerCase())} ${when(overall.occurred_at, overall.time_estimated)}` +
         (overall.location ? ` · ${overall.location}` : "");
     } else {
       $("headline").textContent = "No confirmed shootings, burglaries, or killings recorded yet";
@@ -193,7 +194,9 @@
     }
     for (const inc of list) {
       const li = el("li");
-      li.append(el("span", "tag", LABEL[inc.crime_type] || inc.crime_type));
+      const label = inc.crime_type === "homicide" && inc.was_shooting
+        ? "Fatal shooting" : (LABEL[inc.crime_type] || inc.crime_type);
+      li.append(el("span", "tag", label));
       li.append(el("span", null, inc.location || "Location not reported"));
       li.append(el("div", "when", when(inc.occurred_at, inc.time_estimated)));
       if (inc.articles.length) {

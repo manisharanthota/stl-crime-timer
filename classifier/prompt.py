@@ -5,7 +5,7 @@ import json
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -19,6 +19,9 @@ Fields of each result:
   homicide (killing) that happened within the past few days.
 - crime_type: "shooting", "burglary", or "homicide"; null when is_crime is false.
   If someone was shot and killed, use "homicide".
+- was_shooting: true if anyone was shot with a gun, including a fatal shooting
+  (crime_type "homicide", was_shooting true). false for killings by other means
+  (stabbing, beating, strangling), for burglaries, and when is_crime is false.
 - in_stl: true only if the crime happened inside the City of St. Louis (the
   independent city). St. Louis County and its municipalities (e.g. Ferguson,
   Florissant, Jennings, Clayton, University City, Normandy, Berkeley), St. Charles,

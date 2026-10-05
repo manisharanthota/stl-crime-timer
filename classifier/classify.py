@@ -132,6 +132,7 @@ def _save(session: Session, item: RawItem, out: ClassifierOutput, model: str) ->
             raw_item_id=item.id,
             is_crime=out.is_crime,
             crime_type=out.crime_type,
+            was_shooting=out.was_shooting,
             in_stl=out.in_stl,
             occurred_at=out.occurred_at,
             location=out.location,

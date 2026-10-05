@@ -26,5 +26,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("incidents") as batch_op:
-        batch_op.drop_column("time_estimated")
+    # Native DROP COLUMN (SQLite >= 3.35): a batch table rebuild of incidents would
+    # fail on the incident_items foreign key, since db.py enables FKs on SQLite.
+    op.drop_column("incidents", "time_estimated")
