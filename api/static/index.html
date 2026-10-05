@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>STL Crime Timer</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --card: #ffffff; --text: #1c1c1e; --muted: #6b6b70;
+    --border: #e3e1dc; --accent: #b3261e; --link: #1a5fb4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121214; --card: #1c1c20; --text: #ececf0; --muted: #9a9aa3;
+      --border: #2e2e34; --accent: #ff8a80; --link: #8ab4f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 16px 48px; }
+  .num { font-variant-numeric: tabular-nums; }
+  h1 {
+    font-size: clamp(1.6rem, 5vw, 3rem); line-height: 1.2; margin: 0 0 8px;
+    font-weight: 700; letter-spacing: -0.01em;
+  }
+  h1 .clock { color: var(--accent); white-space: nowrap; }
+  .sub { color: var(--muted); margin: 0 0 32px; }
+  h2 { font-size: 1.1rem; margin: 40px 0 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  #streaks { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+  }
+  .card h3 { margin: 0 0 4px; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+  .card .clock { font-size: 1.5rem; font-weight: 700; }
+  .card .meta { color: var(--muted); font-size: 0.875rem; margin-top: 4px; }
+  ul.incidents { list-style: none; margin: 0; padding: 0; }
+  ul.incidents > li { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; margin-bottom: 8px; }
+  .tag {
+    display: inline-block; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--accent); margin-right: 8px;
+  }
+  .when { color: var(--muted); font-size: 0.875rem; }
+  .articles { margin: 6px 0 0; padding-left: 18px; font-size: 0.9rem; }
+  a { color: var(--link); overflow-wrap: anywhere; }
+  .src { color: var(--muted); }
+  .empty { color: var(--muted); }
+  .stale { color: var(--accent); font-size: 0.875rem; }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.875rem; }
+  footer p { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="headline">St. Louis has gone <span class="clock num" id="overall-clock">…</span> without a shooting, burglary, or killing</h1>
+  <p class="sub" id="overall-meta"></p>
+  <p class="stale" id="stale" hidden>Couldn't refresh data; showing the last known values.</p>
+
+  <div class="cards" id="type-cards"></div>
+
+  <h2>Longest streak</h2>
+  <div class="cards" id="streaks"></div>
+
+  <h2>Recent incidents</h2>
+  <ul class="incidents" id="incidents"><li class="empty">Loading…</li></ul>
+
+  <footer>
+    <p>Based on local news reports. Not official police data.</p>
+    <p>Last pipeline run: <span id="last-run">…</span></p>
+  </footer>
+</main>
+<script>
+(() => {
+  const TYPES = [
+    ["shooting", "Shootings", "a shooting"],
+    ["burglary", "Burglaries", "a burglary"],
+    ["homicide", "Killings", "a killing"],
+  ];
+  const LABEL = { shooting: "Shooting", burglary: "Burglary", homicide: "Killing" };
+  const TZ = "America/Chicago";
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ, month: "short", day: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  });
+
+  let timer = null;        // last /timer response
+  let fetchedAt = 0;       // performance.now() when it arrived
+
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  };
+  const pad = (n) => String(n).padStart(2, "0");
+  const when = (iso, estimated) => (estimated ? "~" : "") + fmt.format(new Date(iso));
+
+  function duration(total) {
+    total = Math.max(0, Math.floor(total));
+    const d = Math.floor(total / 86400);
+    const h = Math.floor((total % 86400) / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return `${d} ${d === 1 ? "day" : "days"}, ${pad(h)}:${pad(m)}:${pad(s)}`;
+  }
+
+  function longDuration(total) {
+    const d = Math.floor(total / 86400), h = Math.floor((total % 86400) / 3600);
+    if (d > 0) return `${d} ${d === 1 ? "day" : "days"}, ${h} ${h === 1 ? "hour" : "hours"}`;
+    const m = Math.floor((total % 3600) / 60);
+    return `${h} ${h === 1 ? "hour" : "hours"}, ${m} ${m === 1 ? "minute" : "minutes"}`;
+  }
+
+  const elapsed = (last) => last.seconds_since + (performance.now() - fetchedAt) / 1000;
+
+  function renderTimer() {
+    const cards = $("type-cards");
+    cards.replaceChildren();
+    const overall = timer.overall.last;
+    if (overall) {
+      $("headline").replaceChildren(
+        "St. Louis has gone ",
+        el("span", "clock num", ""),
+        " without a shooting, burglary, or killing",
+      );
+      $("overall-meta").textContent =
+        `Last: ${LABEL[overall.crime_type].toLowerCase()} ${when(overall.occurred_at, overall.time_estimated)}` +
+        (overall.location ? ` · ${overall.location}` : "");
+    } else {
+      $("headline").textContent = "No confirmed shootings, burglaries, or killings recorded yet";
+      $("overall-meta").textContent = "";
+    }
+    for (const [type, title] of TYPES) {
+      const entry = timer.by_type.find((e) => e.crime_type === type);
+      const card = el("div", "card");
+      card.dataset.type = type;
+      card.append(el("h3", null, `Since last: ${title.toLowerCase()}`));
+      if (entry && entry.last) {
+        card.append(el("div", "clock num", ""));
+        const meta = when(entry.last.occurred_at, entry.last.time_estimated) +
+          (entry.last.location ? ` · ${entry.last.location}` : "");
+        card.append(el("div", "meta", meta));
+      } else {
+        card.append(el("div", "clock", "None recorded"));
+      }
+      cards.append(card);
+    }
+    tick();
+  }
+
+  function tick() {
+    if (!timer) return;
+    const head = document.querySelector("#headline .clock");
+    if (head && timer.overall.last) head.textContent = duration(elapsed(timer.overall.last));
+    for (const entry of timer.by_type) {
+      const clock = document.querySelector(`.card[data-type="${entry.crime_type}"] .clock.num`);
+      if (clock && entry.last) clock.textContent = duration(elapsed(entry.last));
+    }
+  }
+
+  function renderStats(stats) {
+    const box = $("streaks");
+    box.replaceChildren();
+    const entries = [["Any of the three", stats.overall], ...TYPES.map(([type, title]) =>
+      [title, stats.by_type.find((e) => e.crime_type === type)])];
+    for (const [title, entry] of entries) {
+      const card = el("div", "card");
+      card.append(el("h3", null, title));
+      const g = entry && entry.longest;
+      if (g) {
+        card.append(el("div", "clock num", longDuration(g.seconds)));
+        card.append(el("div", "meta", g.ongoing
+          ? `Ongoing, since ${fmt.format(new Date(g.start))}`
+          : `${fmt.format(new Date(g.start))} – ${fmt.format(new Date(g.end))}`));
+      } else {
+        card.append(el("div", "clock", "No data yet"));
+      }
+      box.append(card);
+    }
+  }
+
+  function renderIncidents(list) {
+    const ul = $("incidents");
+    ul.replaceChildren();
+    if (!list.length) {
+      ul.append(el("li", "empty", "No confirmed incidents yet."));
+      return;
+    }
+    for (const inc of list) {
+      const li = el("li");
+      li.append(el("span", "tag", LABEL[inc.crime_type] || inc.crime_type));
+      li.append(el("span", null, inc.location || "Location not reported"));
+      li.append(el("div", "when", when(inc.occurred_at, inc.time_estimated)));
+      if (inc.articles.length) {
+        const arts = el("ul", "articles");
+        for (const a of inc.articles) {
+          const item = el("li");
+          const link = el("a", null, a.title);
+          if (/^https?:\/\//i.test(a.url)) link.href = a.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          item.append(link, el("span", "src", ` — ${a.source_name}`));
+          arts.append(item);
+        }
+        li.append(arts);
+      }
+      ul.append(li);
+    }
+  }
+
+  function renderHealth(health) {
+    const run = health.last_run;
+    $("last-run").textContent = run
+      ? `${fmt.format(new Date(run.finished_at || run.started_at))} (${run.status})`
+      : "never";
+  }
+
+  async function getJSON(path) {
+    const r = await fetch(path, { cache: "no-store" });
+    if (!r.ok) throw new Error(`${path}: ${r.status}`);
+    return r.json();
+  }
+
+  async function refresh() {
+    const results = await Promise.allSettled([
+      getJSON("/timer"), getJSON("/stats"), getJSON("/incidents?limit=20"), getJSON("/health"),
+    ]);
+    const [t, s, i, h] = results;
+    if (t.status === "fulfilled") {
+      timer = t.value;
+      fetchedAt = performance.now();
+      renderTimer();
+    }
+    if (s.status === "fulfilled") renderStats(s.value);
+    if (i.status === "fulfilled") renderIncidents(i.value);
+    if (h.status === "fulfilled") renderHealth(h.value);
+    $("stale").hidden = results.every((r) => r.status === "fulfilled");
+  }
+
+  refresh();
+  setInterval(tick, 1000);
+  setInterval(refresh, 60000);
+})();
+</script>
+</body>
+</html>

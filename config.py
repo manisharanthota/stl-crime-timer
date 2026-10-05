@@ -22,6 +22,7 @@ class Settings(BaseModel):
     gemini_rpm: float = DEFAULT_GEMINI_RPM
     match_location_threshold: float = DEFAULT_MATCH_LOCATION_THRESHOLD
     pipeline_interval_minutes: float = DEFAULT_PIPELINE_INTERVAL_MINUTES
+    admin_token: str | None = None
 
 
 @lru_cache
@@ -40,4 +41,5 @@ def get_settings() -> Settings:
         pipeline_interval_minutes=float(
             os.getenv("PIPELINE_INTERVAL_MINUTES") or DEFAULT_PIPELINE_INTERVAL_MINUTES
         ),
+        admin_token=os.getenv("ADMIN_TOKEN") or None,
     )
