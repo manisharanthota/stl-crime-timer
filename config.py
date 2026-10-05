@@ -19,6 +19,7 @@ class Settings(BaseModel):
     llm_provider: str = "gemini"
     gemini_api_key: str | None = None
     gemini_model: str = DEFAULT_GEMINI_MODEL
+    gemini_fallback_model: str | None = None
     gemini_rpm: float = DEFAULT_GEMINI_RPM
     match_location_threshold: float = DEFAULT_MATCH_LOCATION_THRESHOLD
     pipeline_interval_minutes: float = DEFAULT_PIPELINE_INTERVAL_MINUTES
@@ -34,6 +35,7 @@ def get_settings() -> Settings:
         llm_provider=(os.getenv("LLM_PROVIDER") or "gemini").lower(),
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
         gemini_model=os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL,
+        gemini_fallback_model=os.getenv("GEMINI_FALLBACK_MODEL") or None,
         gemini_rpm=float(os.getenv("GEMINI_RPM") or DEFAULT_GEMINI_RPM),
         match_location_threshold=float(
             os.getenv("MATCH_LOCATION_THRESHOLD") or DEFAULT_MATCH_LOCATION_THRESHOLD

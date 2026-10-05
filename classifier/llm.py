@@ -52,8 +52,15 @@ class GeminiClient(LLMClient):
     def __init__(self, api_key: str, model: str):
         from google import genai
 
+        from google.genai import types
+
         self.model = model
-        self._client = genai.Client(api_key=api_key)
+        # One attempt per call: retries/backoff are classify.request_llm's job, and
+        # SDK retries would stack on top of ours (and may spend quota).
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
+        )
 
     def generate_json(self, system: str, user: str, schema: Any) -> str:
         from google.genai import errors, types
@@ -89,3 +96,14 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient:
             raise ValueError("GEMINI_API_KEY is not set")
         return GeminiClient(settings.gemini_api_key, settings.gemini_model)
     raise ValueError(f"Unknown LLM_PROVIDER: {settings.llm_provider!r}")
+
+
+def get_fallback_client(settings: Settings | None = None) -> LLMClient | None:
+    """Client for GEMINI_FALLBACK_MODEL, or None if unset or the same as the primary."""
+    settings = settings or get_settings()
+    name = settings.gemini_fallback_model
+    if settings.llm_provider != "gemini" or not name or name == settings.gemini_model:
+        return None
+    if not settings.gemini_api_key:
+        raise ValueError("GEMINI_API_KEY is not set")
+    return GeminiClient(settings.gemini_api_key, name)

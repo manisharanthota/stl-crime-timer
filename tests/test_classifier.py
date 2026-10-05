@@ -9,13 +9,14 @@ from sqlalchemy import select
 
 import classifier.__main__ as cli
 import classifier.eval as eval_script
-from classifier.classify import classify_pending
+from classifier.classify import _short, classify_pending
 from classifier.llm import (
     GeminiClient,
     LLMClient,
     LLMError,
     RateLimitError,
     ServiceUnavailableError,
+    get_fallback_client,
     get_llm_client,
     parse_retry_delay,
 )
@@ -401,11 +402,11 @@ def test_repeated_short_429s_stop_run(make_item, run, sleeps):
 def test_503_backoff_then_leaves_items_new(make_item, run, sleeps):
     first = [make_item() for _ in range(10)]
     second = make_item()
-    llm = FakeLLM(*[ServiceUnavailableError("503")] * 4, echo())
+    llm = FakeLLM(*[ServiceUnavailableError("503")] * 3, echo())
 
     counts = run(llm)
 
-    assert sleeps == [5, 15, 45]
+    assert sleeps == [5, 15]
     assert all(i.status == "new" and i.retries == 0 for i in first)
     assert counts["deferred"] == 10
     assert second.status == "classified"  # next batch still runs
@@ -421,13 +422,251 @@ def test_503_then_success(make_item, run, sleeps):
     assert item.status == "classified"
 
 
+@pytest.fixture
+def run_fb(session, sleeps):
+    """classify_pending with an injected primary and fallback client."""
+
+    def _run(llm, fallback, **kwargs):
+        return classify_pending(
+            session, llm=llm, fallback=fallback, sleep=sleeps.append,
+            limiter=RateLimiter(0), **kwargs,
+        )
+
+    return _run
+
+
+def fallback_llm(*responses):
+    llm = FakeLLM(*responses)
+    llm.model = "fake-fallback"
+    return llm
+
+
+def test_fallback_classifies_after_primary_503s(session, make_item, run_fb, sleeps):
+    item = make_item()
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3)
+    fallback = fallback_llm(echo())
+
+    counts = run_fb(primary, fallback)
+
+    assert len(primary.calls) == 3  # first try + 2 retries
+    assert len(fallback.calls) == 1
+    assert sleeps == [5, 15]  # primary backoff only
+    assert item.status == "classified"
+    [c] = classifications(session)
+    assert c.model == "fake-fallback"
+    assert (counts["classified"], counts["fallback"], counts["deferred"]) == (1, 1, 0)
+
+
+def test_fallback_503_defers_without_more_backoff(make_item, run_fb, sleeps):
+    item = make_item()
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3)
+    fallback = fallback_llm(ServiceUnavailableError("503"))
+
+    counts = run_fb(primary, fallback)
+
+    assert len(fallback.calls) == 1
+    assert sleeps == [5, 15]
+    assert (item.status, item.retries) == ("new", 0)
+    assert (counts["deferred"], counts["fallback"]) == (1, 0)
+
+
+def test_fallback_not_used_for_non_503_errors(make_item, run_fb):
+    item = make_item()
+    primary = FakeLLM(*[LLMError("500 internal")] * 3)
+    fallback = fallback_llm(echo())
+
+    counts = run_fb(primary, fallback)
+
+    assert fallback.calls == []
+    assert counts["deferred"] == 1
+    assert item.status == "new"
+
+
+def test_fallback_not_used_when_last_error_is_not_503(make_item, run_fb):
+    make_item()
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 2, LLMError("500 internal"))
+    fallback = fallback_llm(echo())
+    assert run_fb(primary, fallback)["deferred"] == 1
+    assert fallback.calls == []
+
+
+def test_fallback_not_called_when_primary_answers(session, make_item, run_fb):
+    make_item()
+    fallback = fallback_llm(echo())
+    counts = run_fb(FakeLLM(echo()), fallback)
+    assert fallback.calls == []
+    assert counts["fallback"] == 0
+    assert classifications(session)[0].model == "fake-flash"
+
+
+QUOTA = RateLimitError("429 quota", retry_after=None)
+
+
+@pytest.mark.parametrize("retry_after", [None, 600.0])
+def test_primary_quota_switches_to_fallback_for_rest_of_run(
+    session, make_item, run_fb, sleeps, retry_after
+):
+    items = [make_item() for _ in range(15)]  # two batches
+    primary = FakeLLM(RateLimitError("429", retry_after=retry_after))
+    fallback = fallback_llm(echo(), echo())
+
+    counts = run_fb(primary, fallback)
+
+    assert len(primary.calls) == 1  # never asked again after its quota ran out
+    assert len(fallback.calls) == 2
+    assert sleeps == []
+    assert all(i.status == "classified" for i in items)
+    assert {c.model for c in classifications(session)} == {"fake-fallback"}
+    assert counts["classified"] == counts["fallback"] == 15
+    assert (counts["switched_quota"], counts["stopped_quota"]) == (1, 0)
+
+
+def test_quota_switch_mid_run(session, make_item, run_fb):
+    for _ in range(15):
+        make_item()
+    primary = FakeLLM(echo(), QUOTA)  # batch 1 ok, batch 2 hits the quota
+    fallback = fallback_llm(echo())
+
+    counts = run_fb(primary, fallback)
+
+    assert (counts["classified"], counts["fallback"], counts["switched_quota"]) == (15, 5, 1)
+    models = [c.model for c in classifications(session)]
+    assert models.count("fake-flash") == 10 and models.count("fake-fallback") == 5
+
+
+def test_both_quotas_exhausted_stops_run(make_item, run_fb):
+    items = [make_item() for _ in range(15)]
+    primary = FakeLLM(QUOTA)
+    fallback = fallback_llm(echo(), QUOTA)  # batch 1 on the fallback, then its quota
+
+    counts = run_fb(primary, fallback)
+
+    assert (counts["classified"], counts["fallback"]) == (10, 10)
+    assert (counts["switched_quota"], counts["stopped_quota"]) == (1, 1)
+    assert all((i.status, i.retries) == ("new", 0) for i in items[10:])
+
+
+def test_primary_quota_without_fallback_stops_run(make_item, run_fb):
+    item = make_item()
+    counts = run_fb(FakeLLM(QUOTA), None)
+    assert (counts["switched_quota"], counts["stopped_quota"]) == (0, 1)
+    assert (item.status, item.retries) == ("new", 0)
+
+
+def test_after_quota_switch_fallback_503_defers_batch_and_continues(make_item, run_fb, sleeps):
+    items = [make_item() for _ in range(15)]
+    primary = FakeLLM(QUOTA)
+    fallback = fallback_llm(ServiceUnavailableError("503"), echo())
+
+    counts = run_fb(primary, fallback)
+
+    assert len(primary.calls) == 1
+    assert len(fallback.calls) == 2  # one attempt per batch, no backoff
+    assert sleeps == []
+    assert all(i.status == "new" for i in items[:10])
+    assert all(i.status == "classified" for i in items[10:])
+    assert (counts["deferred"], counts["fallback"], counts["stopped_quota"]) == (10, 5, 0)
+
+
+def test_overloaded_primary_and_fallback_quota_defers_and_keeps_primary(make_item, run_fb):
+    items = [make_item() for _ in range(15)]
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3, echo())
+    fallback = fallback_llm(QUOTA)
+
+    counts = run_fb(primary, fallback)
+
+    # The primary still has quota: batch 1 waits, batch 2 runs on the primary.
+    assert len(fallback.calls) == 1
+    assert all(i.status == "new" for i in items[:10])
+    assert all(i.status == "classified" for i in items[10:])
+    assert (counts["deferred"], counts["stopped_quota"], counts["switched_quota"]) == (10, 0, 0)
+
+
+def test_overloaded_primary_after_fallback_quota_gets_no_fallback(make_item, run_fb, sleeps):
+    for _ in range(15):
+        make_item()
+    # Batch 1: 503s -> fallback quota. Batch 2: 503s again, fallback is gone.
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 6)
+    fallback = fallback_llm(QUOTA)
+
+    counts = run_fb(primary, fallback)
+
+    assert len(fallback.calls) == 1
+    assert sleeps == [5, 15, 5, 15]
+    assert (counts["deferred"], counts["stopped_quota"]) == (15, 0)
+
+
+def test_each_batch_tries_primary_first(make_item, run_fb):
+    for _ in range(11):
+        make_item()
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3, echo())
+    fallback = fallback_llm(echo())
+
+    counts = run_fb(primary, fallback)
+
+    assert len(fallback.calls) == 1  # first batch only
+    assert len(primary.calls) == 4  # second batch went to the primary
+    assert (counts["classified"], counts["fallback"]) == (11, 10)
+
+
+def test_no_fallback_configured_defers(make_item, run_fb):
+    make_item()
+    counts = run_fb(FakeLLM(*[ServiceUnavailableError("503")] * 3), None)
+    assert counts["deferred"] == 1
+
+
+def test_injected_llm_does_not_load_fallback_from_settings(make_item, run, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("fallback loaded from settings")
+
+    monkeypatch.setattr("classifier.classify.get_fallback_client", boom)
+    make_item()
+    assert run(FakeLLM(*[ServiceUnavailableError("503")] * 3))["deferred"] == 1
+
+
+def test_default_clients_come_from_settings(session, make_item, monkeypatch, sleeps):
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3)
+    fallback = fallback_llm(echo())
+    monkeypatch.setattr("classifier.classify.get_llm_client", lambda: primary)
+    monkeypatch.setattr("classifier.classify.get_fallback_client", lambda: fallback)
+    make_item()
+
+    counts = classify_pending(session, sleep=sleeps.append, limiter=RateLimiter(0))
+
+    assert counts["fallback"] == 1
+
+
+def test_llm_unavailable_logged_as_one_line_warning(make_item, run, caplog):
+    make_item()
+    long_error = "503 UNAVAILABLE. " + "x" * 500 + "\nsecond line"
+    with caplog.at_level("WARNING", logger="classifier.classify"):
+        run(FakeLLM(*[ServiceUnavailableError(long_error)] * 4))
+
+    [record] = [r for r in caplog.records if "LLM unavailable" in r.getMessage()]
+    assert record.levelname == "WARNING"
+    assert record.exc_info is None
+    message = record.getMessage()
+    assert "\n" not in message
+    assert "second line" not in message
+    assert len(message) < 300
+    assert "leaving 1 item(s) new" in message
+    assert all(r.exc_info is None for r in caplog.records)
+
+
+def test_short_error_text():
+    assert _short(ValueError("one\ntwo")) == "one"
+    assert _short(ValueError("")) == "ValueError"
+    long = _short(ValueError("y" * 500))
+    assert len(long) == 200 and long.endswith("...")
+
+
 def test_other_api_error_uses_same_backoff(make_item, run, sleeps):
     item = make_item()
-    llm = FakeLLM(*[LLMError("400 bad request")] * 4)
+    llm = FakeLLM(*[LLMError("400 bad request")] * 3)
 
     counts = run(llm)
 
-    assert sleeps == [5, 15, 45]
+    assert sleeps == [5, 15]
     assert counts["deferred"] == 1
     assert item.status == "new"
 
@@ -533,10 +772,12 @@ class FakeModels:
 
 def fake_genai(monkeypatch, result):
     models = FakeModels(result)
-    monkeypatch.setattr(
-        "google.genai.Client",
-        lambda api_key: SimpleNamespace(api_key=api_key, models=models),
-    )
+
+    def client(api_key, http_options=None):
+        models.client_kwargs = {"api_key": api_key, "http_options": http_options}
+        return SimpleNamespace(api_key=api_key, models=models)
+
+    monkeypatch.setattr("google.genai.Client", client)
     return models
 
 
@@ -564,6 +805,21 @@ def test_gemini_client_returns_text_and_requests_json(monkeypatch):
     assert config.response_schema == list[BatchResult]
     assert config.system_instruction == "sys"
     assert config.automatic_function_calling.disable is True
+
+
+def test_gemini_client_disables_sdk_retries(monkeypatch):
+    models = fake_genai(monkeypatch, "[]")
+    GeminiClient("test-key", "gemini-test")
+    options = models.client_kwargs["http_options"]
+    assert options.retry_options.attempts == 1
+
+
+def test_real_sdk_client_makes_one_attempt():
+    """The real google-genai client built with our options never retries (no network:
+    constructing a client and its tenacity policy makes no request)."""
+    client = GeminiClient("test-key", "gemini-test")
+    retry = client._client._api_client._retry
+    assert retry.stop.max_attempt_number == 1
 
 
 def test_gemini_429_carries_retry_delay(monkeypatch):
@@ -613,6 +869,27 @@ def test_get_llm_client_gemini(monkeypatch):
     client = get_llm_client(Settings(llm_provider="gemini", gemini_api_key="k", gemini_model="m"))
     assert isinstance(client, GeminiClient)
     assert client.model == "m"
+
+
+def test_get_fallback_client(monkeypatch):
+    fake_genai(monkeypatch, "[]")
+    base = {"llm_provider": "gemini", "gemini_api_key": "k", "gemini_model": "primary"}
+    client = get_fallback_client(Settings(**base, gemini_fallback_model="backup"))
+    assert isinstance(client, GeminiClient)
+    assert client.model == "backup"
+    assert get_fallback_client(Settings(**base)) is None
+    assert get_fallback_client(Settings(**base, gemini_fallback_model="primary")) is None
+
+
+def test_fallback_model_read_from_env(monkeypatch):
+    from config import get_settings
+
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "backup-model")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().gemini_fallback_model == "backup-model"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_get_llm_client_unknown_provider():
