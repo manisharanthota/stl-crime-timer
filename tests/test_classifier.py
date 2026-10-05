@@ -527,6 +527,7 @@ def test_gemini_client_returns_text_and_requests_json(monkeypatch):
     assert config.response_mime_type == "application/json"
     assert config.response_schema == list[BatchResult]
     assert config.system_instruction == "sys"
+    assert config.automatic_function_calling.disable is True
 
 
 def test_gemini_429_carries_retry_delay(monkeypatch):

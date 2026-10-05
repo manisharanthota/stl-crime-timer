@@ -1,4 +1,4 @@
-"""SQLAlchemy models for sources, raw items, classifications, and incidents."""
+"""SQLAlchemy models for sources, raw items, classifications, incidents, and jobs."""
 
 import hashlib
 from datetime import datetime
@@ -9,6 +9,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     func,
@@ -20,12 +21,14 @@ from db import Base, UTCDateTime
 RAW_ITEM_STATUSES = ("new", "classified", "failed")
 CRIME_TYPES = ("shooting", "burglary", "homicide")
 INCIDENT_STATUSES = ("confirmed", "review", "rejected")
+PIPELINE_RUN_STATUSES = ("running", "success", "partial", "failed")
 
 # Stored as VARCHAR + CHECK so the schema is portable between SQLite and Postgres.
 _enum_opts = {"native_enum": False, "create_constraint": True}
 RawItemStatus = Enum(*RAW_ITEM_STATUSES, name="raw_item_status", **_enum_opts)
 CrimeType = Enum(*CRIME_TYPES, name="crime_type", **_enum_opts)
 IncidentStatus = Enum(*INCIDENT_STATUSES, name="incident_status", **_enum_opts)
+PipelineRunStatus = Enum(*PIPELINE_RUN_STATUSES, name="pipeline_run_status", **_enum_opts)
 
 
 def hash_url(url: str) -> str:
@@ -116,3 +119,33 @@ class IncidentItem(Base):
     raw_item_id: Mapped[int] = mapped_column(
         ForeignKey("raw_items.id"), primary_key=True
     )
+
+
+class PipelineRun(Base):
+    """One fetch -> classify -> match run; the pipeline heartbeat."""
+
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    status: Mapped[str] = mapped_column(
+        PipelineRunStatus, default="running", server_default="running"
+    )
+    fetch_counts: Mapped[dict | None] = mapped_column(JSON)
+    classify_counts: Mapped[dict | None] = mapped_column(JSON)
+    match_counts: Mapped[dict | None] = mapped_column(JSON)
+    fetch_error: Mapped[str | None] = mapped_column(Text)
+    classify_error: Mapped[str | None] = mapped_column(Text)
+    match_error: Mapped[str | None] = mapped_column(Text)
+
+
+class JobLock(Base):
+    """A named lock row; stale once expires_at has passed."""
+
+    __tablename__ = "job_locks"
+
+    name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(64))
+    acquired_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)

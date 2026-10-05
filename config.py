@@ -10,6 +10,7 @@ DEFAULT_DATABASE_URL = "sqlite:///./stl_crime.db"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_RPM = 5.0
 DEFAULT_MATCH_LOCATION_THRESHOLD = 85.0
+DEFAULT_PIPELINE_INTERVAL_MINUTES = 10.0
 
 
 class Settings(BaseModel):
@@ -20,6 +21,7 @@ class Settings(BaseModel):
     gemini_model: str = DEFAULT_GEMINI_MODEL
     gemini_rpm: float = DEFAULT_GEMINI_RPM
     match_location_threshold: float = DEFAULT_MATCH_LOCATION_THRESHOLD
+    pipeline_interval_minutes: float = DEFAULT_PIPELINE_INTERVAL_MINUTES
 
 
 @lru_cache
@@ -34,5 +36,8 @@ def get_settings() -> Settings:
         gemini_rpm=float(os.getenv("GEMINI_RPM") or DEFAULT_GEMINI_RPM),
         match_location_threshold=float(
             os.getenv("MATCH_LOCATION_THRESHOLD") or DEFAULT_MATCH_LOCATION_THRESHOLD
+        ),
+        pipeline_interval_minutes=float(
+            os.getenv("PIPELINE_INTERVAL_MINUTES") or DEFAULT_PIPELINE_INTERVAL_MINUTES
         ),
     )

@@ -28,10 +28,15 @@ def test_upgrade_head_creates_schema(tmp_path, monkeypatch):
         "classifications",
         "incidents",
         "incident_items",
+        "pipeline_runs",
+        "job_locks",
     }
     assert "ix_raw_items_status" in {i["name"] for i in insp.get_indexes("raw_items")}
     assert "ix_incidents_occurred_at" in {
         i["name"] for i in insp.get_indexes("incidents")
+    }
+    assert "ix_pipeline_runs_started_at" in {
+        i["name"] for i in insp.get_indexes("pipeline_runs")
     }
     assert "time_estimated" in {c["name"] for c in insp.get_columns("incidents")}
     engine.dispose()

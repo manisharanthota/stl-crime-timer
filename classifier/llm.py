@@ -63,6 +63,9 @@ class GeminiClient(LLMClient):
             response_mime_type="application/json",
             response_schema=schema,
             temperature=0,
+            # No tools are passed; disabling AFC also silences the SDK's
+            # "AFC is enabled" log on every request.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         try:
             response = self._client.models.generate_content(
