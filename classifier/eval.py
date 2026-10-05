@@ -25,6 +25,7 @@ from classifier.prefilter import prefilter
 from classifier.prompt import PROMPT_VERSION
 from classifier.schema import ClassifierOutput
 from models import RawItem
+from timeutil import to_local, to_utc
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = ROOT / "tests" / "fixtures" / "eval_headlines.yaml"
@@ -61,7 +62,7 @@ def to_item(case: dict, item_id: int) -> RawItem:
         id=item_id,
         title=case["title"],
         body=case.get("body"),
-        published_at=datetime.fromisoformat(published) if published else None,
+        published_at=to_utc(datetime.fromisoformat(published)) if published else None,
     )
 
 
@@ -140,7 +141,10 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 misses.append(f"{f}: want {want}, got {got}")
         rows_ok += not misses
-        detail = "; ".join(misses) or f"conf={pred.confidence:.2f}"
+        occurred = (
+            to_local(pred.occurred_at).strftime("%Y-%m-%d %H:%M %Z") if pred.occurred_at else "-"
+        )
+        detail = "; ".join(misses) or f"conf={pred.confidence:.2f} occurred={occurred}"
         print(f"{'FAIL' if misses else 'PASS'} {i + 1:2d}. {title:<70} {detail}")
 
     print()

@@ -3,6 +3,7 @@
 import json
 
 from models import RawItem
+from timeutil import to_local
 
 PROMPT_VERSION = "v2"
 
@@ -47,7 +48,10 @@ def build_user_prompt(items: list[RawItem]) -> str:
         [
             {
                 "raw_item_id": item.id,
-                "published_at": item.published_at.isoformat() if item.published_at else None,
+                # St. Louis time, so "Friday night" resolves to the right local day.
+                "published_at": (
+                    to_local(item.published_at).isoformat() if item.published_at else None
+                ),
                 "title": item.title,
                 "body": item.body or "",
             }

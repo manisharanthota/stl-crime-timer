@@ -86,7 +86,7 @@ def test_good_feed_inserts_new_items(session, client):
     assert items[1].url == "https://news.example/2026/10/01/soulard-burglary?utm_source=rss"
     assert items[1].url_hash == hash_url("https://news.example/2026/10/01/soulard-burglary")
 
-    published = [i.published_at.replace(tzinfo=timezone.utc) for i in items[:2]]
+    published = [i.published_at for i in items[:2]]
     assert published == [
         datetime(2026, 10, 1, 3, 15, tzinfo=timezone.utc),
         datetime(2026, 10, 1, 17, 0, tzinfo=timezone.utc),

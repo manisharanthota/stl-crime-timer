@@ -5,7 +5,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
-    DateTime,
     Enum,
     Float,
     ForeignKey,
@@ -16,7 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from db import Base
+from db import Base, UTCDateTime
 
 RAW_ITEM_STATUSES = ("new", "classified", "failed")
 CRIME_TYPES = ("shooting", "burglary", "homicide")
@@ -42,7 +41,7 @@ class Source(Base):
     url: Mapped[str] = mapped_column(String(2048), unique=True)
     type: Mapped[str] = mapped_column(String(50))
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     fail_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     raw_items: Mapped[list["RawItem"]] = relationship(back_populates="source")
@@ -57,13 +56,13 @@ class RawItem(Base):
     url_hash: Mapped[str] = mapped_column(String(64), unique=True)
     title: Mapped[str] = mapped_column(String(1000))
     body: Mapped[str | None] = mapped_column(Text)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     status: Mapped[str] = mapped_column(
         RawItemStatus, default="new", server_default="new", index=True
     )
     retries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        UTCDateTime, server_default=func.now()
     )
 
     source: Mapped[Source] = relationship(back_populates="raw_items")
@@ -77,13 +76,13 @@ class Classification(Base):
     is_crime: Mapped[bool] = mapped_column(Boolean)
     crime_type: Mapped[str | None] = mapped_column(CrimeType)
     in_stl: Mapped[bool] = mapped_column(Boolean)
-    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    occurred_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     location: Mapped[str | None] = mapped_column(String(500))
     confidence: Mapped[float] = mapped_column(Float)
     model: Mapped[str] = mapped_column(String(100))
     prompt_version: Mapped[str] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        UTCDateTime, server_default=func.now()
     )
 
 
@@ -92,13 +91,13 @@ class Incident(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     crime_type: Mapped[str] = mapped_column(CrimeType)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
     location: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(
         IncidentStatus, default="review", server_default="review"
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        UTCDateTime, server_default=func.now()
     )
 
     raw_items: Mapped[list[RawItem]] = relationship(secondary="incident_items")

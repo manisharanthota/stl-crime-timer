@@ -2,11 +2,10 @@
 
 from datetime import datetime
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-LOCAL_TZ = ZoneInfo("America/Chicago")
+from timeutil import to_utc
 
 
 class ClassifierOutput(BaseModel):
@@ -19,11 +18,9 @@ class ClassifierOutput(BaseModel):
 
     @field_validator("occurred_at")
     @classmethod
-    def _assume_local_time(cls, value: datetime | None) -> datetime | None:
+    def _to_utc(cls, value: datetime | None) -> datetime | None:
         # Times without an offset are St. Louis local time.
-        if value is not None and value.tzinfo is None:
-            return value.replace(tzinfo=LOCAL_TZ)
-        return value
+        return to_utc(value) if value is not None else None
 
     @model_validator(mode="after")
     def _crime_type_matches_is_crime(self) -> "ClassifierOutput":

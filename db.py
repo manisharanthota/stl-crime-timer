@@ -1,13 +1,43 @@
 """SQLAlchemy engine, session factory, and declarative base."""
 
-from sqlalchemy import Engine, create_engine, event
+from datetime import datetime, timezone
+
+from sqlalchemy import DateTime, Engine, TypeDecorator, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from config import get_settings
+from timeutil import to_utc
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class UTCDateTime(TypeDecorator):
+    """DateTime that is always UTC in the database and aware-UTC in Python.
+
+    Values are converted with timeutil.to_utc on the way in (naive = America/Chicago).
+    SQLite can't store an offset, so it gets naive UTC; Postgres gets timestamptz.
+    Values read back are aware UTC on both.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        value = to_utc(value)
+        if dialect.name == "sqlite":
+            return value.replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 @event.listens_for(Engine, "connect")

@@ -28,7 +28,8 @@ python -m classifier.eval                # score the live LLM on tests/fixtures/
 ## Architecture
 
 - `config.py` — `get_settings()` loads `.env` (python-dotenv) into a cached Pydantic `Settings` (`database_url`, `anthropic_api_key`, `llm_provider`, `gemini_api_key`, `gemini_model`, `gemini_rpm`). Read config through this, not `os.getenv`.
-- `db.py` — SQLAlchemy 2.0 `engine`, `SessionLocal`, and declarative `Base`. All models subclass `Base`.
+- `db.py` — SQLAlchemy 2.0 `engine`, `SessionLocal`, declarative `Base`, and `UTCDateTime`. All models subclass `Base`; every datetime column uses `UTCDateTime`.
+- `timeutil.py` — all datetimes are stored and compared in UTC. `to_utc()` treats naive input as America/Chicago (DST-aware); `to_local()` converts to St. Louis time and is for display only (and the LLM prompt). `UTCDateTime` applies `to_utc` on write (naive UTC on SQLite, timestamptz on Postgres) and returns aware UTC on read.
 - `models.py` — `Source`, `RawItem`, `Classification`, `Incident`, `IncidentItem`, plus `hash_url()` (sha256 used for `raw_items.url_hash`). Enum-like columns are non-native `Enum`s with CHECK constraints (portable SQLite → Postgres). `db.py` enables SQLite foreign keys on every connection.
 - `seed.py` — `seed_sources(session, path)` inserts sources from `sources.yaml` whose url isn't already stored.
 - `alembic/env.py` — takes the DB URL from `config.py` (the value in `alembic.ini` is ignored) and uses `Base.metadata`; model modules must be imported there for autogenerate to see them.

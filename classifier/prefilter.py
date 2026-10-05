@@ -10,6 +10,10 @@ CRIME_KEYWORDS = re.compile(
     r"shots?|shootings?|shooters?|gunfire"
     r"|burglary|burglaries|burglars?|break-ins?"
     r"|killed|homicides?|murder(?:s|ed)?|stabbed|dead"
+    # Bodies found are often homicides before police call them that.
+    r"|human\s+remains|remains\s+(?:were\s+)?found|found\s+(?:human\s+)?remains"
+    r"|bod(?:y|ies)\s+(?:was\s+|were\s+)?found|found\s+(?:a\s+)?bod(?:y|ies)"
+    r"|death\s+investigations?"
     r")\b",
     re.IGNORECASE,
 )

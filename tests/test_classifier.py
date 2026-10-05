@@ -22,7 +22,7 @@ from classifier.llm import (
 from classifier.prefilter import prefilter
 from classifier.prompt import PROMPT_VERSION, build_user_prompt
 from classifier.ratelimit import RateLimiter, interval_for_rpm
-from classifier.schema import LOCAL_TZ, BatchResult, ClassifierOutput
+from classifier.schema import BatchResult, ClassifierOutput
 from config import Settings
 from models import Classification, RawItem, Source
 
@@ -131,6 +131,12 @@ def classifications(session):
         ("Man STABBED near Fox Park", None),
         ("Teen killed Friday", None),
         ("Murder suspect sought", None),
+        ("Human remains found in south St. Louis home after wall collapse", None),
+        ("Remains were found in a vacant lot", None),
+        ("Police: body found in Carondelet Park", None),
+        ("Officers found a body near the riverfront", None),
+        ("Bodies were found inside the home", None),
+        ("Update", "Police opened a death investigation Tuesday."),
     ],
 )
 def test_prefilter_passes_crime_keywords(title, body):
@@ -144,6 +150,8 @@ def test_prefilter_passes_crime_keywords(title, body):
         ("Filing deadline nears for city races", None),
         ("Screenshot of new stadium plan goes viral", None),
         ("Rain expected this weekend", "Bring an umbrella."),
+        ("Mystery remains unsolved", None),
+        ("Student body president elected", None),
     ],
 )
 def test_prefilter_rejects_non_crime(title, body):
@@ -190,7 +198,8 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.is_crime is True
     assert c.crime_type == "shooting"
     assert c.in_stl is True
-    assert c.occurred_at.replace(tzinfo=None) == datetime(2026, 9, 27, 21)
+    session.expire_all()
+    assert c.occurred_at == datetime(2026, 9, 28, 2, tzinfo=timezone.utc)
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
@@ -444,9 +453,15 @@ def test_schema_clears_crime_type_when_not_crime():
     assert out.crime_type is None
 
 
-def test_schema_naive_time_is_st_louis_local():
+def test_schema_naive_time_is_st_louis_local_converted_to_utc():
     out = ClassifierOutput.model_validate({**VALID, "occurred_at": "2026-09-27T21:00:00"})
-    assert out.occurred_at.tzinfo == LOCAL_TZ
+    assert out.occurred_at == datetime(2026, 9, 28, 2, tzinfo=timezone.utc)
+    assert out.occurred_at.utcoffset().total_seconds() == 0
+
+
+def test_schema_offset_time_converted_to_utc():
+    out = ClassifierOutput.model_validate({**VALID, "occurred_at": "2026-01-15T21:00:00-06:00"})
+    assert out.occurred_at == datetime(2026, 1, 16, 3, tzinfo=timezone.utc)
 
 
 def test_batch_result_requires_raw_item_id():
@@ -461,7 +476,8 @@ def test_user_prompt_is_json_array_with_ids():
     ]
     data = json.loads(build_user_prompt(items))
     assert [d["raw_item_id"] for d in data] == [7, 8]
-    assert data[0]["published_at"].startswith("2026-09-28")
+    # Stored UTC midnight is shown to the model as St. Louis time (CDT, UTC-5).
+    assert data[0]["published_at"] == "2026-09-27T19:00:00-05:00"
     assert data[1]["published_at"] is None
 
 
