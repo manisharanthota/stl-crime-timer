@@ -9,7 +9,10 @@ from matcher.location import location_similarity, normalize_location
 from models import Classification, Incident, IncidentItem, RawItem, Source, hash_url
 
 T0 = datetime(2026, 10, 1, 22, 0, tzinfo=timezone.utc)
-NOTHING = {"created": 0, "merged": 0, "skipped_rejected": 0, "skipped_no_time": 0}
+NOTHING = {
+    "created": 0, "merged": 0, "skipped_rejected": 0, "skipped_no_time": 0,
+    "skipped_followup_no_time": 0, "refreshed": 0,
+}
 _ids = count(1)
 
 
@@ -29,6 +32,8 @@ def add(session):
         in_stl=True,
         published_at=None,
         was_shooting=False,
+        neighborhood=None,
+        is_followup=False,
     ) -> RawItem:
         n = next(_ids)
         url = f"https://example.com/story/{n}"
@@ -51,6 +56,8 @@ def add(session):
                 in_stl=in_stl,
                 occurred_at=occurred_at,
                 location=location,
+                neighborhood=neighborhood,
+                is_followup=is_followup,
                 confidence=confidence,
                 model="test",
                 prompt_version="t",
@@ -326,3 +333,208 @@ def test_running_twice_is_idempotent(session, add):
         (i.id, i.crime_type, i.occurred_at, i.status) for i in incidents(session)
     ] == snapshot
     assert links(session) == 3
+
+
+def reclassify(session, item, **fields):
+    """Add a newer classification for an already-classified item."""
+    base = {
+        "is_crime": True, "crime_type": "shooting", "in_stl": True, "occurred_at": T0,
+        "location": "1200 block of N Grand Blvd", "confidence": 0.9,
+    }
+    session.add(Classification(
+        raw_item_id=item.id, model="test", prompt_version="t2", **{**base, **fields}
+    ))
+    session.commit()
+
+
+# --- neighborhood matching ---------------------------------------------------
+
+def test_same_neighborhood_merges_despite_different_location(session, add):
+    add(location="1200 block of Hamilton Avenue", neighborhood="West End")
+    add(location="West End", neighborhood="West End", occurred_at=T0 + timedelta(hours=1))
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert len(inc.raw_items) == 2
+    assert inc.neighborhood == "West End"
+
+
+def test_different_neighborhoods_and_locations_stay_separate(session, add):
+    add(location="1200 block of Hamilton Avenue", neighborhood="West End")
+    add(location="Arsenal Street", neighborhood="Tower Grove South")
+    match_pending(session, threshold=85)
+    assert len(incidents(session)) == 2
+
+
+def test_missing_neighborhood_falls_back_to_location(session, add):
+    add(location="West End", neighborhood="West End")
+    add(location="1200 block of Hamilton Avenue", neighborhood=None)
+    match_pending(session, threshold=85)
+    assert len(incidents(session)) == 2  # no neighborhood to compare, locations differ
+
+
+def test_neighborhood_match_still_needs_time_window(session, add):
+    add(neighborhood="Dutchtown", location="Meramec St")
+    add(neighborhood="Dutchtown", location="Gravois Ave", occurred_at=T0 + timedelta(hours=7))
+    match_pending(session, threshold=85)
+    assert len(incidents(session)) == 2
+
+
+def test_merged_incident_fills_neighborhood(session, add):
+    add(neighborhood=None)
+    add(neighborhood="Fox Park", occurred_at=T0 + timedelta(hours=1))
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert inc.neighborhood == "Fox Park"
+
+
+# --- wider window for estimated times ----------------------------------------
+
+def test_estimated_incident_matches_within_24h(session, add):
+    add(occurred_at=None, published_at=T0)  # estimated incident at T0
+    match_pending(session, threshold=85)
+    add(occurred_at=T0 - timedelta(hours=20))  # reported time, 20h earlier
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert len(inc.raw_items) == 2
+    assert inc.time_estimated is False
+    assert inc.occurred_at == T0 - timedelta(hours=20)
+
+
+def test_estimated_item_matches_reported_incident_within_24h(session, add):
+    add(occurred_at=T0)
+    match_pending(session, threshold=85)
+    add(occurred_at=None, published_at=T0 + timedelta(hours=20))
+    match_pending(session, threshold=85)
+    assert len(incidents(session)) == 1
+
+
+def test_estimated_window_ends_at_24h(session, add):
+    add(occurred_at=None, published_at=T0)
+    add(occurred_at=T0 + timedelta(hours=25))
+    match_pending(session, threshold=85)
+    assert len(incidents(session)) == 2
+
+
+def test_reported_times_keep_6h_window(session, add):
+    add(occurred_at=T0)
+    add(occurred_at=T0 + timedelta(hours=20))
+    match_pending(session, threshold=85)
+    assert len(incidents(session)) == 2
+
+
+# --- follow-ups --------------------------------------------------------------
+
+def test_followup_without_time_is_skipped(session, add):
+    add(occurred_at=None, published_at=T0 + timedelta(days=3), is_followup=True)
+    counts = match_pending(session, threshold=85)
+    assert counts == {**NOTHING, "skipped_followup_no_time": 1}
+    assert incidents(session) == []
+
+
+def test_followup_with_time_merges_into_original(session, add):
+    add(crime_type="homicide", was_shooting=True)
+    add(
+        crime_type="homicide", occurred_at=T0 + timedelta(minutes=30),
+        published_at=T0 + timedelta(days=2), is_followup=True,
+    )
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert len(inc.raw_items) == 2
+    assert inc.occurred_at == T0  # the follow-up's publish date never moves it
+
+
+def test_followup_with_time_creates_incident(session, add):
+    add(is_followup=True, published_at=T0 + timedelta(days=2))
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert inc.occurred_at == T0
+
+
+# --- refresh from re-classified linked items ---------------------------------
+
+def test_refresh_takes_reported_time_from_reclassified_item(session, add):
+    item = add(occurred_at=None, published_at=T0 + timedelta(hours=10))
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].time_estimated is True
+
+    reclassify(session, item, occurred_at=T0 + timedelta(hours=12))
+    counts = match_pending(session, threshold=85)
+
+    [inc] = incidents(session)
+    assert counts["refreshed"] == 1
+    # A reported time replaces the estimate, even though it's later.
+    assert (inc.occurred_at, inc.time_estimated) == (T0 + timedelta(hours=12), False)
+    assert match_pending(session, threshold=85)["refreshed"] == 0  # idempotent
+
+
+def test_refresh_keeps_earliest_reported_time(session, add):
+    a = add(occurred_at=T0)
+    add(occurred_at=T0 + timedelta(hours=2))
+    match_pending(session, threshold=85)
+
+    reclassify(session, a, occurred_at=T0 - timedelta(hours=1))
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].occurred_at == T0 - timedelta(hours=1)
+
+    reclassify(session, a, occurred_at=T0 + timedelta(hours=5))  # later: ignored
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].occurred_at == T0 - timedelta(hours=1)
+
+
+def test_refresh_turns_on_was_shooting_never_off(session, add):
+    item = add(crime_type="homicide")
+    match_pending(session, threshold=85)
+    reclassify(session, item, crime_type="homicide", was_shooting=True)
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].was_shooting is True
+
+    reclassify(session, item, crime_type="homicide", was_shooting=False)
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].was_shooting is True
+
+
+def test_refresh_ignores_items_now_not_crime(session, add):
+    item = add(occurred_at=None, published_at=T0)
+    match_pending(session, threshold=85)
+    reclassify(session, item, is_crime=False, crime_type=None, occurred_at=T0 - timedelta(hours=3))
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (T0, True)
+
+
+@pytest.mark.parametrize("status", ["rejected", "merged"])
+def test_refresh_leaves_rejected_and_merged_alone(session, add, status):
+    item = add(occurred_at=None, published_at=T0)
+    match_pending(session, threshold=85)
+    inc = incidents(session)[0]
+    inc.status = status
+    session.commit()
+
+    reclassify(session, item, occurred_at=T0 - timedelta(hours=1), was_shooting=True)
+    assert match_pending(session, threshold=85)["refreshed"] == 0
+    session.refresh(inc)
+    assert (inc.occurred_at, inc.time_estimated) == (T0, True)
+
+
+def test_refresh_fills_neighborhood(session, add):
+    item = add()
+    match_pending(session, threshold=85)
+    reclassify(session, item, neighborhood="Shaw")
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].neighborhood == "Shaw"
+
+
+# --- merged incidents --------------------------------------------------------
+
+def test_merged_incident_is_not_a_match_candidate(session, add):
+    add()
+    match_pending(session, threshold=85)
+    merged = incidents(session)[0]
+    merged.status = "merged"
+    session.commit()
+
+    add(occurred_at=T0 + timedelta(hours=1))
+    counts = match_pending(session, threshold=85)
+
+    assert counts["created"] == 1
+    assert len(merged.raw_items) == 1

@@ -30,8 +30,8 @@ from timeutil import to_local, to_utc
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = ROOT / "tests" / "fixtures" / "eval_headlines.yaml"
 DEFAULT_CACHE = ROOT / ".eval_cache.json"
-# was_shooting is only scored on cases that label it (the crime cases).
-FIELDS = ("is_crime", "crime_type", "in_stl", "was_shooting")
+# was_shooting and is_followup are only scored on cases that label them.
+FIELDS = ("is_crime", "crime_type", "in_stl", "was_shooting", "is_followup")
 
 
 def load_cases(path: Path) -> list[dict]:

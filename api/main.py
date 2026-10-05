@@ -17,6 +17,7 @@ from api.schemas import (
     TimerResponse,
 )
 from config import get_settings
+from matcher.merge import MergeError, merge_incidents
 from models import PipelineRun
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
@@ -124,3 +125,21 @@ def admin_confirm(incident_id: int, session: Session = Depends(get_session)) -> 
 )
 def admin_reject(incident_id: int, session: Session = Depends(get_session)) -> IncidentOut:
     return _set_status(session, incident_id, "rejected")
+
+
+@app.post(
+    "/admin/incidents/{incident_id}/merge",
+    response_model=IncidentOut,
+    dependencies=[Depends(require_admin)],
+)
+def admin_merge(
+    incident_id: int,
+    into: int = Query(..., description="id of the incident to merge into"),
+    session: Session = Depends(get_session),
+) -> IncidentOut:
+    """Fold incident_id into `into`; incident_id becomes status=merged."""
+    try:
+        target = merge_incidents(session, incident_id, into)
+    except MergeError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    return queries.incident_out(queries.get_incident(session, target.id))

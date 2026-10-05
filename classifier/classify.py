@@ -167,6 +167,8 @@ def _save(session: Session, item: RawItem, out: ClassifierOutput, model: str) ->
             in_stl=out.in_stl,
             occurred_at=out.occurred_at,
             location=out.location,
+            neighborhood=out.neighborhood,
+            is_followup=out.is_followup,
             confidence=out.confidence,
             model=model,
             prompt_version=PROMPT_VERSION,

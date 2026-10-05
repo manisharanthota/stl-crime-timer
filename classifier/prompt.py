@@ -2,10 +2,11 @@
 
 import json
 
+from matcher.neighborhoods import NEIGHBORHOODS
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -15,8 +16,13 @@ matching the given schema. Judge each item on its own.
 
 Fields of each result:
 - raw_item_id: copied unchanged from the input item.
-- is_crime: true only if the item reports a specific, recent shooting, burglary, or
-  homicide (killing) that happened within the past few days.
+- is_crime: true only if the item is about a specific shooting, burglary, or
+  homicide (killing) that happened within 7 days before the publish date. That
+  includes follow-up stories about such a recent crime: the victim identified,
+  family or friends remember the victim, a vigil, police seek or arrest a suspect.
+- is_followup: true if the item is a follow-up story like those (published after
+  the crime and mainly about its aftermath) rather than the first report of it.
+  false when is_crime is false.
 - crime_type: "shooting", "burglary", or "homicide"; null when is_crime is false.
   If someone was shot and killed, use "homicide".
 - was_shooting: true if anyone was shot with a gun, including a fatal shooting
@@ -29,20 +35,30 @@ Fields of each result:
   are NOT in the city: in_stl=false. If the location is unclear, in_stl=false.
 - occurred_at: when the crime happened (ISO 8601 with UTC offset, St. Louis local
   time), resolved against the publish date (e.g. "Saturday night" -> that Saturday
-  around 21:00). Never default to the publish date. null if unknown.
+  around 21:00). For follow-up stories, this is when the original crime happened,
+  not when the story was published. Never default to the publish date. null if
+  unknown.
 - location: the most specific place mentioned (address, intersection, or
   neighborhood), or null.
+- neighborhood: the official City of St. Louis neighborhood where the crime
+  happened, spelled exactly as in the list below, or null if the item doesn't say
+  or you aren't sure. Use the neighborhood the item names, or the one containing
+  the address it gives.
 - confidence: 0 to 1, how sure you are that is_crime, crime_type, and in_stl are right.
 
 Set is_crime=false for:
-- Court news: trials, verdicts, sentencing, pleas, appeals, hearings.
-- Arrests, charges, or identifications for crimes that happened weeks or more ago.
+- Court news, even about a recent crime: charges filed, trials, verdicts,
+  sentencing, pleas, appeals, hearings.
+- Follow-ups (identifications, memorials, vigils, arrests, searches for suspects)
+  about crimes that happened more than 7 days before the publish date.
 - Crimes outside the City of St. Louis (also set in_stl=false).
 - Opinion pieces, editorials, columns, and letters.
 - Crime statistics, trend reports, policy, and politics stories.
 - Anything that is not a shooting, burglary, or homicide (sports, weather,
   accidents, fires, overdoses, natural deaths).
-"""
+
+Official City of St. Louis neighborhoods (for the neighborhood field):
+""" + "\n".join(f"- {name}" for name in NEIGHBORHOODS) + "\n"
 
 
 def build_user_prompt(items: list[RawItem]) -> str:

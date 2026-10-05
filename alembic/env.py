@@ -67,14 +67,39 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        sqlite = connection.dialect.name == "sqlite"
+        if sqlite:
+            # Batch migrations rebuild tables (copy, DROP, rename). With foreign keys
+            # on (db.py enables them), dropping a table that other rows reference
+            # fails. The pragma is a no-op inside a transaction, so it's set first.
+            # Alembic commits SQLite migrations as it goes (non-transactional DDL),
+            # so the integrity check afterwards can't roll back; it fails the command
+            # loudly instead of leaving dangling references unnoticed.
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            # End SQLAlchemy's autobegun transaction, or alembic would run inside it
+            # and never commit.
+            connection.commit()
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             render_as_batch=True,
         )
 
-        with context.begin_transaction():
-            context.run_migrations()
+        try:
+            with context.begin_transaction():
+                context.run_migrations()
+                if sqlite:
+                    violations = connection.exec_driver_sql(
+                        "PRAGMA foreign_key_check"
+                    ).fetchall()
+                    if violations:
+                        raise RuntimeError(
+                            f"foreign key violations after migrating: {violations}"
+                        )
+        finally:
+            if sqlite:
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                connection.commit()
 
 
 if context.is_offline_mode():

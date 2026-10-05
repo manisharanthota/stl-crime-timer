@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from alembic import command
@@ -147,5 +148,73 @@ def test_downgrade_to_pipeline_runs_with_linked_incidents(tmp_path, monkeypatch)
             assert conn.execute(text("SELECT count(*) FROM incident_items")).scalar() == 1
         engine.dispose()
         assert not {"time_estimated", "was_shooting"} & columns
+    finally:
+        get_settings.cache_clear()
+
+
+def test_merged_status_upgrade_and_downgrade(tmp_path, monkeypatch):
+    cfg, db_url = _alembic(tmp_path, monkeypatch)
+    try:
+        command.upgrade(cfg, "a7c3e9f2b514")  # before merged/neighborhood
+        engine = create_engine(db_url)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO sources (id, name, url, type) VALUES (1, 's', 'https://s.example', 'rss')"
+            ))
+            conn.execute(text(
+                "INSERT INTO raw_items (id, source_id, url, url_hash, title)"
+                " VALUES (1, 1, 'https://s.example/1', 'h1', 't')"
+            ))
+            for iid in (1, 2):
+                conn.execute(text(
+                    "INSERT INTO incidents (id, crime_type, occurred_at, status)"
+                    f" VALUES ({iid}, 'shooting', '2026-10-01 12:00:00', 'confirmed')"
+                ))
+            conn.execute(text("INSERT INTO incident_items VALUES (1, 1)"))
+        engine.dispose()
+
+        # Rebuilds incidents (status CHECK) while incident_items references it.
+        command.upgrade(cfg, "head")
+        engine = create_engine(db_url)
+        insp = inspect(engine)
+        assert {"neighborhood", "merged_into_id"} <= {c["name"] for c in insp.get_columns("incidents")}
+        assert {"neighborhood", "is_followup"} <= {
+            c["name"] for c in insp.get_columns("classifications")
+        }
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE incidents SET status='merged', merged_into_id=1 WHERE id=2"))
+            assert conn.execute(text("SELECT count(*) FROM incident_items")).scalar() == 1
+            assert conn.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
+        engine.dispose()
+
+        command.downgrade(cfg, "a7c3e9f2b514")
+        engine = create_engine(db_url)
+        with engine.begin() as conn:
+            assert conn.execute(text("SELECT status FROM incidents WHERE id=2")).scalar() == "review"
+            assert conn.execute(text("SELECT count(*) FROM incident_items")).scalar() == 1
+            # The old CHECK constraint is back.
+            with pytest.raises(Exception):
+                conn.execute(text("UPDATE incidents SET status='merged' WHERE id=2"))
+        engine.dispose()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_migration_reports_foreign_key_violations(tmp_path, monkeypatch):
+    """env.py turns SQLite FKs off for table rebuilds, so it checks integrity
+    afterwards and fails the command if any reference dangles. (SQLite migrations
+    commit as they go, so this reports the problem; it can't roll back.)"""
+    cfg, db_url = _alembic(tmp_path, monkeypatch)
+    try:
+        command.upgrade(cfg, "a7c3e9f2b514")
+        engine = create_engine(db_url)
+        with engine.begin() as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            conn.execute(text("INSERT INTO incident_items VALUES (99, 99)"))  # dangling
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="foreign key violations after migrating") as info:
+            command.upgrade(cfg, "head")
+        assert "incident_items" in str(info.value)
     finally:
         get_settings.cache_clear()

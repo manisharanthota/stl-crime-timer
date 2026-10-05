@@ -20,7 +20,8 @@ from db import Base, UTCDateTime
 
 RAW_ITEM_STATUSES = ("new", "classified", "failed")
 CRIME_TYPES = ("shooting", "burglary", "homicide")
-INCIDENT_STATUSES = ("confirmed", "review", "rejected")
+# merged: folded into another incident (merged_into_id); never counted or matched.
+INCIDENT_STATUSES = ("confirmed", "review", "rejected", "merged")
 PIPELINE_RUN_STATUSES = ("running", "success", "partial", "failed")
 
 # Stored as VARCHAR + CHECK so the schema is portable between SQLite and Postgres.
@@ -85,6 +86,10 @@ class Classification(Base):
     in_stl: Mapped[bool] = mapped_column(Boolean)
     occurred_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     location: Mapped[str | None] = mapped_column(String(500))
+    neighborhood: Mapped[str | None] = mapped_column(String(100))
+    is_followup: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     confidence: Mapped[float] = mapped_column(Float)
     model: Mapped[str] = mapped_column(String(100))
     prompt_version: Mapped[str] = mapped_column(String(50))
@@ -100,6 +105,7 @@ class Incident(Base):
     crime_type: Mapped[str] = mapped_column(CrimeType)
     occurred_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
     location: Mapped[str | None] = mapped_column(String(500))
+    neighborhood: Mapped[str | None] = mapped_column(String(100))
     # True while every linked item lacked occurred_at (time is a published_at fallback).
     time_estimated: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0"
@@ -111,6 +117,8 @@ class Incident(Base):
     status: Mapped[str] = mapped_column(
         IncidentStatus, default="review", server_default="review"
     )
+    # Set when status=merged: the incident this one was folded into.
+    merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("incidents.id"))
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=func.now()
     )

@@ -59,6 +59,7 @@ class IncidentOut(BaseModel):
     time_estimated: bool
     was_shooting: bool
     location: str | None
+    neighborhood: str | None
     status: str
     articles: list[ArticleOut]
 

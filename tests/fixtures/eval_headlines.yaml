@@ -100,3 +100,24 @@
   body: "Prosecutors say the man broke into a bank branch in Clayton on Tuesday night."
   published_at: "2026-10-01T11:40:00-05:00"
   expected: {is_crime: false, crime_type: null, in_stl: false}
+
+# Follow-up stories (prompt v4): about a crime within 7 days = crime, older = not.
+- title: "Police identify man killed in Dutchtown shooting"
+  body: "St. Louis police on Wednesday identified the 29-year-old man who was shot and killed Monday night in the 3500 block of Meramec Street in Dutchtown. No arrests have been made."
+  published_at: "2026-09-30T10:00:00-05:00"
+  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: true, is_followup: true}
+
+- title: "Vigil held for teen killed in Fox Park shooting"
+  body: "Friends and family gathered Thursday evening to remember a 16-year-old boy who was fatally shot Sunday afternoon on Shenandoah Avenue in the Fox Park neighborhood of St. Louis."
+  published_at: "2026-10-01T21:00:00-05:00"
+  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: true, is_followup: true}
+
+- title: "Family remembers woman killed in Tower Grove South shooting last month"
+  body: "A month after a 45-year-old woman was shot and killed on Aug. 28 on Morgan Ford Road in St. Louis, her family is pleading for anyone with information to come forward."
+  published_at: "2026-09-28T12:00:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null, is_followup: false}
+
+- title: "Police still seeking suspect in July killing in Carondelet"
+  body: "St. Louis police are still looking for the person who stabbed a 52-year-old man to death on July 12 near Carondelet Park, and released new surveillance images Tuesday."
+  published_at: "2026-09-29T09:00:00-05:00"
+  expected: {is_crime: false, crime_type: null, in_stl: null, is_followup: false}

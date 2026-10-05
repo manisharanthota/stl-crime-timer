@@ -81,6 +81,7 @@ def incident_out(incident: Incident) -> IncidentOut:
         time_estimated=incident.time_estimated,
         was_shooting=incident.was_shooting,
         location=incident.location,
+        neighborhood=incident.neighborhood,
         status=incident.status,
         articles=[
             ArticleOut(

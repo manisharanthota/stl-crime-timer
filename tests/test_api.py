@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from api.main import app, get_admin_token, get_now, get_session
 from models import Incident, IncidentItem, RawItem, Source, hash_url
@@ -33,12 +34,16 @@ def add(session_factory):
         location="Grand Blvd",
         articles=0,
         was_shooting=None,
+        time_estimated=False,
+        neighborhood=None,
     ):
         with session_factory() as s:
             incident = Incident(
                 crime_type=crime_type,
                 occurred_at=NOW - timedelta(hours=hours_ago),
                 location=location,
+                neighborhood=neighborhood,
+                time_estimated=time_estimated,
                 status=status,
                 # Like the matcher: a shooting always has was_shooting.
                 was_shooting=crime_type == "shooting" if was_shooting is None else was_shooting,
@@ -287,6 +292,7 @@ ADMIN_CALLS = [
     ("get", "/admin/review"),
     ("post", "/admin/incidents/1/confirm"),
     ("post", "/admin/incidents/1/reject"),
+    ("post", "/admin/incidents/1/merge?into=2"),
 ]
 
 
@@ -348,3 +354,139 @@ def test_page_loads(client):
     assert "America/Chicago" in html
     for path in ("/timer", "/stats", "/incidents", "/health"):
         assert path in html
+
+
+# --- admin merge ---
+
+
+def merge(client, source, target):
+    return client.post(f"/admin/incidents/{source}/merge?into={target}", headers=AUTH)
+
+
+def article_urls(incident_json) -> set[str]:
+    return {a["url"] for a in incident_json["articles"]}
+
+
+def test_merge_moves_links_and_combines_fields(client, add, session_factory):
+    target = add("homicide", hours_ago=10, status="review", location=None, articles=1,
+                 was_shooting=False)
+    source = add("shooting", hours_ago=12, status="confirmed", location="West End",
+                 neighborhood="West End", articles=2)
+
+    r = merge(client, source, target)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == target
+    assert len(body["articles"]) == 3
+    assert body["crime_type"] == "homicide"
+    assert body["was_shooting"] is True  # ORed in from the shooting
+    assert body["status"] == "confirmed"  # either was confirmed
+    assert body["occurred_at"] == "2026-10-05T00:00:00Z"  # earliest reported time
+    assert (body["location"], body["neighborhood"]) == ("West End", "West End")
+    with session_factory() as s:
+        src = s.get(Incident, source)
+        assert (src.status, src.merged_into_id) == ("merged", target)
+        assert src.raw_items == []
+
+
+def test_merge_reported_time_beats_earlier_estimate(client, add):
+    target = add("shooting", hours_ago=10)
+    source = add("shooting", hours_ago=20, time_estimated=True)
+    body = merge(client, source, target).json()
+    assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-05T02:00:00Z", False)
+
+
+def test_merge_takes_reported_time_from_source(client, add):
+    target = add("shooting", hours_ago=20, time_estimated=True)
+    source = add("shooting", hours_ago=10)
+    body = merge(client, source, target).json()
+    assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-05T02:00:00Z", False)
+
+
+def test_merge_both_estimated_keeps_earliest(client, add):
+    target = add("shooting", hours_ago=10, time_estimated=True)
+    source = add("shooting", hours_ago=20, time_estimated=True)
+    body = merge(client, source, target).json()
+    assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-04T16:00:00Z", True)
+
+
+def test_merge_never_downgrades_confirmed_target(client, add):
+    target = add("shooting", hours_ago=10, status="confirmed")
+    source = add("shooting", hours_ago=11, status="review")
+    assert merge(client, source, target).json()["status"] == "confirmed"
+
+
+def test_merge_updates_timer_and_lists(client, add):
+    target = add("homicide", hours_ago=30, was_shooting=True)
+    source = add("homicide", hours_ago=2, was_shooting=True)  # duplicate, later time
+    assert client.get("/timer").json()["overall"]["last"]["incident_id"] == source
+
+    merge(client, source, target)
+
+    timer = client.get("/timer").json()
+    assert timer["overall"]["last"]["incident_id"] == target
+    assert timer["overall"]["last"]["seconds_since"] == 30 * 3600
+    assert [i["id"] for i in client.get("/incidents").json()] == [target]
+    stats = client.get("/stats").json()
+    assert stats["overall"]["longest"]["start_incident_id"] == target
+    assert stats["overall"]["longest"]["ongoing"] is True
+
+
+def test_merge_rejected_source_into_live_target(client, add):
+    target = add("shooting", hours_ago=5, articles=1)
+    source = add("shooting", hours_ago=6, status="rejected", articles=1)
+    body = merge(client, source, target).json()
+    assert len(body["articles"]) == 2
+
+
+def test_merge_skips_item_already_linked_to_target(client, add, session_factory):
+    target = add("shooting", hours_ago=5, articles=1)
+    source = add("shooting", hours_ago=6, articles=1)
+    with session_factory() as s:
+        shared = s.scalars(
+            select(IncidentItem.raw_item_id).where(IncidentItem.incident_id == target)
+        ).one()
+        s.add(IncidentItem(incident_id=source, raw_item_id=shared))
+        s.commit()
+    body = merge(client, source, target).json()
+    assert len(body["articles"]) == 2
+
+
+@pytest.mark.parametrize(
+    "setup, expected",
+    [
+        ("self", 400),
+        ("missing_source", 404),
+        ("missing_target", 404),
+        ("source_merged", 409),
+        ("target_merged", 409),
+        ("target_rejected", 409),
+        ("incompatible", 409),
+    ],
+)
+def test_merge_errors(client, add, session_factory, setup, expected):
+    a = add("shooting", hours_ago=5)
+    b = add("burglary" if setup == "incompatible" else "shooting", hours_ago=6,
+            status="rejected" if setup == "target_rejected" else "confirmed")
+    source, target = {
+        "self": (a, a),
+        "missing_source": (999, b),
+        "missing_target": (a, 999),
+    }.get(setup, (a, b))
+    if setup in ("source_merged", "target_merged"):
+        with session_factory() as s:
+            s.get(Incident, a if setup == "source_merged" else b).status = "merged"
+            s.commit()
+
+    r = merge(client, source, target)
+
+    assert r.status_code == expected
+    with session_factory() as s:  # nothing changed
+        assert s.get(Incident, a).merged_into_id is None
+
+
+def test_merge_requires_into(client, add):
+    a = add("shooting")
+    r = client.post(f"/admin/incidents/{a}/merge", headers=AUTH)
+    assert r.status_code == 422

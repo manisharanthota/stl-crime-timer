@@ -21,7 +21,7 @@ from classifier.llm import (
     parse_retry_delay,
 )
 from classifier.prefilter import prefilter
-from classifier.prompt import PROMPT_VERSION, build_user_prompt
+from classifier.prompt import PROMPT_VERSION, SYSTEM_PROMPT, build_user_prompt
 from classifier.ratelimit import RateLimiter, interval_for_rpm
 from classifier.schema import BatchResult, ClassifierOutput
 from config import Settings
@@ -204,7 +204,7 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == "v3"
+    assert c.prompt_version == PROMPT_VERSION == "v4"
     assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
@@ -739,6 +739,58 @@ def test_fatal_shooting_saved_as_homicide_with_was_shooting(session, make_item, 
     assert "was_shooting" in llm.calls[0][0]
 
 
+@pytest.mark.parametrize(
+    "given, expected",
+    [
+        ("West End", "West End"),
+        ("west end neighborhood", "West End"),
+        ("Hill", "The Hill"),
+        ("CWE", "Central West End"),
+        ("Saint Louis Hills", "St. Louis Hills"),
+        ("Forest Park", None),  # a park, not a neighborhood
+        ("Ferguson", None),
+        (None, None),
+    ],
+)
+def test_schema_normalizes_neighborhood(given, expected):
+    out = ClassifierOutput.model_validate({**VALID, "neighborhood": given})
+    assert out.neighborhood == expected
+
+
+def test_schema_followup_defaults_false_and_cleared_when_not_crime():
+    assert ClassifierOutput.model_validate(VALID).is_followup is False
+    assert ClassifierOutput.model_validate({**VALID, "is_followup": True}).is_followup is True
+    out = ClassifierOutput.model_validate({**VALID, "is_crime": False, "is_followup": True})
+    assert out.is_followup is False
+
+
+def test_neighborhood_and_followup_saved(session, make_item, run):
+    make_item("Police identify man killed in West End shooting")
+    run(FakeLLM(echo({1: {
+        "crime_type": "homicide", "was_shooting": True,
+        "neighborhood": "west end", "is_followup": True,
+    }})))
+    [c] = classifications(session)
+    assert (c.neighborhood, c.is_followup) == ("West End", True)
+
+
+def test_prompt_v4_has_followup_rule_and_neighborhoods():
+    from matcher.neighborhoods import NEIGHBORHOODS
+
+    assert PROMPT_VERSION == "v4"
+    assert "within 7 days" in SYSTEM_PROMPT
+    assert "is_followup" in SYSTEM_PROMPT
+    assert "charges filed" in SYSTEM_PROMPT
+    assert all(f"- {name}\n" in SYSTEM_PROMPT for name in NEIGHBORHOODS)
+
+
+def test_official_neighborhood_list():
+    from matcher.neighborhoods import NEIGHBORHOODS, normalize_neighborhood
+
+    assert len(NEIGHBORHOODS) == len(set(NEIGHBORHOODS)) == 79
+    assert all(normalize_neighborhood(name) == name for name in NEIGHBORHOODS)
+
+
 def test_batch_result_requires_raw_item_id():
     with pytest.raises(ValidationError):
         BatchResult.model_validate(VALID)
@@ -964,14 +1016,20 @@ def eval_env(monkeypatch, tmp_path):
     return SimpleNamespace(cases=cases, cache=cache, make=make)
 
 
-def test_eval_fixture_has_20_labeled_cases():
+def test_eval_fixture_has_24_labeled_cases():
     cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
-    assert len(cases) == 20
+    assert len(cases) == 24
     for case in cases:
         expected = case["expected"]
-        assert set(expected) - {"was_shooting"} == {"is_crime", "crime_type", "in_stl"}
+        optional = {"was_shooting", "is_followup"}
+        assert set(expected) - optional == {"is_crime", "crime_type", "in_stl"}
         # was_shooting is labeled on exactly the crime cases.
         assert ("was_shooting" in expected) == expected["is_crime"]
+    followups = [c["expected"] for c in cases if "is_followup" in c["expected"]]
+    # 2 recent follow-ups (crimes) and 2 about older crimes (not crimes).
+    assert [(e["is_crime"], e["is_followup"]) for e in followups] == [
+        (True, True), (True, True), (False, False), (False, False),
+    ]
 
 
 def test_eval_batches_and_scores(eval_env, capsys):
