@@ -33,4 +33,5 @@ def test_upgrade_head_creates_schema(tmp_path, monkeypatch):
     assert "ix_incidents_occurred_at" in {
         i["name"] for i in insp.get_indexes("incidents")
     }
+    assert "time_estimated" in {c["name"] for c in insp.get_columns("incidents")}
     engine.dispose()

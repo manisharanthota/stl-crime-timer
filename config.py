@@ -9,6 +9,7 @@ from pydantic import BaseModel
 DEFAULT_DATABASE_URL = "sqlite:///./stl_crime.db"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_RPM = 5.0
+DEFAULT_MATCH_LOCATION_THRESHOLD = 85.0
 
 
 class Settings(BaseModel):
@@ -18,6 +19,7 @@ class Settings(BaseModel):
     gemini_api_key: str | None = None
     gemini_model: str = DEFAULT_GEMINI_MODEL
     gemini_rpm: float = DEFAULT_GEMINI_RPM
+    match_location_threshold: float = DEFAULT_MATCH_LOCATION_THRESHOLD
 
 
 @lru_cache
@@ -30,4 +32,7 @@ def get_settings() -> Settings:
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
         gemini_model=os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL,
         gemini_rpm=float(os.getenv("GEMINI_RPM") or DEFAULT_GEMINI_RPM),
+        match_location_threshold=float(
+            os.getenv("MATCH_LOCATION_THRESHOLD") or DEFAULT_MATCH_LOCATION_THRESHOLD
+        ),
     )

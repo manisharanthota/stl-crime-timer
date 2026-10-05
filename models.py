@@ -93,6 +93,10 @@ class Incident(Base):
     crime_type: Mapped[str] = mapped_column(CrimeType)
     occurred_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
     location: Mapped[str | None] = mapped_column(String(500))
+    # True while every linked item lacked occurred_at (time is a published_at fallback).
+    time_estimated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     status: Mapped[str] = mapped_column(
         IncidentStatus, default="review", server_default="review"
     )
