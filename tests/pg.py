@@ -25,6 +25,7 @@ def _from_env(name: str) -> str | None:
     value = os.environ.get(name)
     if value is None:
         value = dotenv_values(ROOT / ".env").get(name)
+    value = (value or "").strip()
     return normalize_database_url(value) if value else None
 
 

@@ -14,10 +14,18 @@ DEFAULT_PIPELINE_INTERVAL_MINUTES = 10.0
 DEFAULT_ALERT_COOLDOWN_HOURS = 6.0
 
 
+def _env(name: str) -> str | None:
+    """An environment variable with surrounding whitespace and newlines stripped (a
+    value pasted into a GitHub secret or dashboard often ends in a newline); empty or
+    whitespace-only counts as unset."""
+    value = (os.getenv(name) or "").strip()
+    return value or None
+
+
 def _flag(value: str | None, default: bool = False) -> bool:
-    if value is None or not value.strip():
+    if value is None:
         return default
-    return value.strip().lower() in ("1", "true", "yes", "on")
+    return value.lower() in ("1", "true", "yes", "on")
 
 
 def normalize_database_url(url: str) -> str:
@@ -51,25 +59,25 @@ def get_settings() -> Settings:
     load_dotenv()
     return Settings(
         database_url=normalize_database_url(
-            os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
+            _env("DATABASE_URL") or DEFAULT_DATABASE_URL
         ),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
-        llm_provider=(os.getenv("LLM_PROVIDER") or "gemini").lower(),
-        gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
-        gemini_model=os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL,
-        gemini_fallback_model=os.getenv("GEMINI_FALLBACK_MODEL") or None,
-        gemini_rpm=float(os.getenv("GEMINI_RPM") or DEFAULT_GEMINI_RPM),
+        anthropic_api_key=_env("ANTHROPIC_API_KEY"),
+        llm_provider=(_env("LLM_PROVIDER") or "gemini").lower(),
+        gemini_api_key=_env("GEMINI_API_KEY"),
+        gemini_model=_env("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL,
+        gemini_fallback_model=_env("GEMINI_FALLBACK_MODEL"),
+        gemini_rpm=float(_env("GEMINI_RPM") or DEFAULT_GEMINI_RPM),
         match_location_threshold=float(
-            os.getenv("MATCH_LOCATION_THRESHOLD") or DEFAULT_MATCH_LOCATION_THRESHOLD
+            _env("MATCH_LOCATION_THRESHOLD") or DEFAULT_MATCH_LOCATION_THRESHOLD
         ),
         pipeline_interval_minutes=float(
-            os.getenv("PIPELINE_INTERVAL_MINUTES") or DEFAULT_PIPELINE_INTERVAL_MINUTES
+            _env("PIPELINE_INTERVAL_MINUTES") or DEFAULT_PIPELINE_INTERVAL_MINUTES
         ),
-        admin_token=os.getenv("ADMIN_TOKEN") or None,
-        alert_webhook_url=os.getenv("ALERT_WEBHOOK_URL") or None,
-        alert_on_new_incident=_flag(os.getenv("ALERT_ON_NEW_INCIDENT")),
+        admin_token=_env("ADMIN_TOKEN"),
+        alert_webhook_url=_env("ALERT_WEBHOOK_URL"),
+        alert_on_new_incident=_flag(_env("ALERT_ON_NEW_INCIDENT")),
         alert_cooldown_hours=float(
-            os.getenv("ALERT_COOLDOWN_HOURS") or DEFAULT_ALERT_COOLDOWN_HOURS
+            _env("ALERT_COOLDOWN_HOURS") or DEFAULT_ALERT_COOLDOWN_HOURS
         ),
-        log_to_file=_flag(os.getenv("LOG_TO_FILE"), default=True),
+        log_to_file=_flag(_env("LOG_TO_FILE"), default=True),
     )
