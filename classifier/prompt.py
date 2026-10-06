@@ -6,7 +6,7 @@ from matcher.neighborhoods import NEIGHBORHOODS
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -22,6 +22,9 @@ Fields of each result:
   family or friends remember the victim, a vigil, police seek or arrest a suspect.
 - is_followup: true if the item is a follow-up story like those (published after
   the crime and mainly about its aftermath) rather than the first report of it.
+  An item mainly about an arrest, a detention, a suspect taken into custody, or a
+  "person of interest" is always a follow-up (is_followup=true), even if it is the
+  first story you see about that crime: an arrest is not a new crime.
   false when is_crime is false.
 - crime_type: "shooting", "burglary", or "homicide"; null when is_crime is false.
   If someone was shot and killed, use "homicide".
@@ -36,8 +39,9 @@ Fields of each result:
 - occurred_at: when the crime happened (ISO 8601 with UTC offset, St. Louis local
   time), resolved against the publish date (e.g. "Saturday night" -> that Saturday
   around 21:00). For follow-up stories, this is when the original crime happened,
-  not when the story was published. Never default to the publish date. null if
-  unknown.
+  never when the arrest, detention, or identification happened and never when the
+  story was published. If a follow-up doesn't say when the crime itself happened,
+  occurred_at is null. Never default to the publish date. null if unknown.
 - time_precision: how much of occurred_at the item states.
   "exact": it gives a clock time ("12:40 a.m.", "around 9:30 p.m.").
   "date_only": it gives only the day, or a part of the day ("Friday",

@@ -204,7 +204,7 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == PROMPT_VERSION == "v5"
+    assert c.prompt_version == PROMPT_VERSION == "v6"
     assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
@@ -815,10 +815,18 @@ def test_time_precision_saved(session, make_item, run):
     assert classifications(session)[0].time_precision == "date_only"
 
 
-def test_prompt_v5_explains_time_precision():
-    assert PROMPT_VERSION == "v5"
+def test_prompt_explains_time_precision():
     assert "time_precision" in SYSTEM_PROMPT
     assert "date_only" in SYSTEM_PROMPT and "00:00" in SYSTEM_PROMPT
+
+
+def test_prompt_v6_arrests_are_followups_with_crime_time():
+    assert PROMPT_VERSION == "v6"
+    text = " ".join(SYSTEM_PROMPT.split())
+    assert "arrest, a detention" in text and '"person of interest"' in text
+    assert "is always a follow-up (is_followup=true)" in text
+    assert "never when the arrest, detention, or identification happened" in text
+    assert "doesn't say when the crime itself happened, occurred_at is null" in text
 
 
 def test_batch_result_requires_raw_item_id():
@@ -1051,20 +1059,29 @@ def eval_env(monkeypatch, tmp_path):
     return SimpleNamespace(cases=cases, cache=cache, make=make, settings=llms_settings)
 
 
-def test_eval_fixture_has_24_labeled_cases():
+def test_eval_fixture_has_25_labeled_cases():
     cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
-    assert len(cases) == 24
+    assert len(cases) == 25
     for case in cases:
         expected = case["expected"]
-        optional = {"was_shooting", "is_followup"}
+        optional = {"was_shooting", "is_followup", "creates_incident", "occurred_at_null"}
         assert set(expected) - optional == {"is_crime", "crime_type", "in_stl"}
         # was_shooting is labeled on exactly the crime cases.
         assert ("was_shooting" in expected) == expected["is_crime"]
     followups = [c["expected"] for c in cases if "is_followup" in c["expected"]]
-    # 2 recent follow-ups (crimes) and 2 about older crimes (not crimes).
+    # 2 recent follow-ups (crimes), 2 about older crimes (not crimes), 1 detention.
     assert [(e["is_crime"], e["is_followup"]) for e in followups] == [
-        (True, True), (True, True), (False, False), (False, False),
+        (True, True), (True, True), (False, False), (False, False), (True, True),
     ]
+
+
+def test_eval_fixture_has_detention_followup():
+    cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
+    [case] = [c for c in cases if "person of interest" in c["title"]]
+    assert case["expected"] == {
+        "is_crime": True, "crime_type": "burglary", "in_stl": True, "was_shooting": False,
+        "is_followup": True, "creates_incident": False, "occurred_at_null": True,
+    }
 
 
 def test_eval_batches_and_scores(eval_env, capsys):
@@ -1124,6 +1141,41 @@ def test_eval_skips_was_shooting_when_unlabeled(eval_env, capsys):
     eval_env.make(echo())
     eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
     assert "was_shooting:" not in capsys.readouterr().out
+
+
+EVAL_CASES_DETAINED = (
+    "- title: Police detain person of interest in burglaries\n"
+    "  expected: {is_crime: true, crime_type: burglary, in_stl: true,"
+    " is_followup: true, creates_incident: false, occurred_at_null: true}\n"
+    "- title: Burglars hit Soulard bar\n"
+    "  expected: {is_crime: true, crime_type: burglary, in_stl: true, creates_incident: true}\n"
+)
+
+
+def test_eval_scores_creates_incident_and_occurred_at_null(eval_env, capsys):
+    eval_env.cases.write_text(EVAL_CASES_DETAINED)
+    # Case 0 is a follow-up, but dated by the detention: it would not create an
+    # incident, yet occurred_at is wrong. Case 1 is a first report.
+    eval_env.make(echo({0: {"crime_type": "burglary", "is_followup": True},
+                        1: {"crime_type": "burglary"}}))
+
+    eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
+
+    out = capsys.readouterr().out
+    assert "creates_incident: 2/2 (100%)" in out
+    assert "occurred_at_null: want True, got False" in out
+    assert "occurred_at_null: 0/1 (0%)" in out
+    assert "Overall: 1/2 (50%)" in out
+
+
+def test_eval_creates_incident_false_for_followup_or_outside_stl():
+    base = {**VALID, "crime_type": "burglary"}
+    assert eval_script.predicted(ClassifierOutput.model_validate(base), "creates_incident")
+    for override in ({"is_followup": True}, {"in_stl": False}, {"is_crime": False}):
+        out = ClassifierOutput.model_validate({**base, **override})
+        assert not eval_script.predicted(out, "creates_incident")
+    no_time = ClassifierOutput.model_validate({**base, "occurred_at": None})
+    assert eval_script.predicted(no_time, "occurred_at_null")
 
 
 def test_eval_model_flag_overrides_gemini_model(eval_env, capsys):

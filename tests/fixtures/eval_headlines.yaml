@@ -1,6 +1,8 @@
 # Hand-labeled headlines for `python -m classifier.eval` (runs the real LLM; not used by pytest).
 # expected.in_stl: null means "don't score this field".
 # expected.was_shooting is labeled on the crime cases only; unlabeled cases are not scored on it.
+# expected.creates_incident (is_crime and in_stl and not is_followup) and
+# expected.occurred_at_null are derived from the prediction, scored only where labeled.
 - title: "Man shot and wounded in north St. Louis' Walnut Park neighborhood"
   body: "A 34-year-old man was shot in the leg Sunday night in the 5600 block of Riverview Boulevard, St. Louis police said. He was taken to a hospital in stable condition."
   published_at: "2026-09-28T07:15:00-05:00"
@@ -121,3 +123,10 @@
   body: "St. Louis police are still looking for the person who stabbed a 52-year-old man to death on July 12 near Carondelet Park, and released new surveillance images Tuesday."
   published_at: "2026-09-29T09:00:00-05:00"
   expected: {is_crime: false, crime_type: null, in_stl: null, is_followup: false}
+
+# Arrest/detention stories (prompt v6): a follow-up that creates no incident, with
+# occurred_at null because the story never says when the burglaries happened.
+- title: "Police detain person of interest in connection to burglaries in St. Louis City"
+  body: "ST. LOUIS - Police detained a person of interest early Tuesday in connection with a string of burglaries in St. Louis. According to St. Louis Metropolitan Police Department spokesperson Mitch McCoy, an officer spotted and detained a person of interest overnight in Soulard near 9th St. and Allen Avenue. Detectives are continuing their investigation."
+  published_at: "2026-10-06T06:13:42-05:00"
+  expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false, is_followup: true, creates_incident: false, occurred_at_null: true}

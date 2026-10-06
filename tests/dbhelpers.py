@@ -65,7 +65,7 @@ def add_sample_data(session) -> None:
                        occurred_at=utc(2026, 10, 4, 5, 40), time_precision="exact",
                        location="Grand and Gravois", neighborhood="Tower Grove East",
                        is_followup=False, confidence=0.9, model="gemini-test",
-                       prompt_version="v5")
+                       prompt_version="v6")
         for item in items
     ])
     # The merged incident gets the lower id, so it points forward to a row that a

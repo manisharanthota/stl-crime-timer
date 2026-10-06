@@ -123,7 +123,11 @@ def _merge(incident: Incident, item: _Pending) -> None:
     if _was_shooting(c):
         incident.was_shooting = True
     current = to_utc(incident.occurred_at)
-    if incident.time_estimated and not item.estimated:
+    if c.is_followup and item.estimated:
+        # A follow-up's guessed time is often the arrest or publish day, not the
+        # crime's: it may find the incident, but never moves its time.
+        pass
+    elif incident.time_estimated and not item.estimated:
         # A reported time beats a published_at fallback, even if later.
         incident.occurred_at = item.occurred_at
         incident.time_estimated = False
@@ -198,14 +202,17 @@ def match_pending(session: Session, *, threshold: float | None = None) -> dict[s
     refresh live incidents from their linked items' newest classifications.
 
     Items matching a rejected incident are left unlinked so a manually rejected
-    crime doesn't come back as a new incident. Safe to run repeatedly.
+    crime doesn't come back as a new incident. Follow-ups never create an incident:
+    without a match they stay unlinked and are tried again next run. Safe to run
+    repeatedly.
     """
     if threshold is None:
         threshold = get_settings().match_location_threshold
     pending, skipped, skipped_followup = _pending(session)
     counts = {
         "created": 0, "merged": 0, "skipped_rejected": 0, "skipped_no_time": skipped,
-        "skipped_followup_no_time": skipped_followup, "refreshed": 0,
+        "skipped_followup_no_time": skipped_followup, "skipped_followup_no_match": 0,
+        "refreshed": 0,
     }
 
     for item in pending:
@@ -213,6 +220,12 @@ def match_pending(session: Session, *, threshold: float | None = None) -> dict[s
         incident = _best_match(session, item, threshold)
         if incident is not None and incident.status == "rejected":
             counts["skipped_rejected"] += 1
+            continue
+        if incident is None and c.is_followup:
+            # An arrest or vigil is not a new crime: a follow-up only enriches an
+            # existing incident. It stays unlinked, so it can still attach once the
+            # original report arrives.
+            counts["skipped_followup_no_match"] += 1
             continue
         if incident is None:
             incident = Incident(

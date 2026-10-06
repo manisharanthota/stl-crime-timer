@@ -31,8 +31,21 @@ from timeutil import to_local, to_utc
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = ROOT / "tests" / "fixtures" / "eval_headlines.yaml"
 DEFAULT_CACHE = ROOT / ".eval_cache.json"
-# was_shooting and is_followup are only scored on cases that label them.
-FIELDS = ("is_crime", "crime_type", "in_stl", "was_shooting", "is_followup")
+# Every field but the first three is only scored on cases that label it.
+# creates_incident and occurred_at_null are derived from the prediction (see predicted).
+FIELDS = (
+    "is_crime", "crime_type", "in_stl", "was_shooting", "is_followup",
+    "creates_incident", "occurred_at_null",
+)
+
+
+def predicted(pred: ClassifierOutput, field: str):
+    if field == "creates_incident":
+        # The matcher only creates incidents from St. Louis crimes that aren't follow-ups.
+        return pred.is_crime and pred.in_stl and not pred.is_followup
+    if field == "occurred_at_null":
+        return pred.occurred_at is None
+    return getattr(pred, field)
 
 
 def load_cases(path: Path) -> list[dict]:
@@ -145,7 +158,7 @@ def main(argv: list[str] | None = None) -> None:
             if f not in expected or (f == "in_stl" and want is None):
                 continue
             field_total[f] += 1
-            got = getattr(pred, f)
+            got = predicted(pred, f)
             if got == want:
                 field_hits[f] += 1
             else:

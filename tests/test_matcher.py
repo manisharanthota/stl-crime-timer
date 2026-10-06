@@ -11,9 +11,10 @@ from models import Classification, Incident, IncidentItem, RawItem, Source, hash
 T0 = datetime(2026, 10, 1, 22, 0, tzinfo=timezone.utc)
 NOTHING = {
     "created": 0, "merged": 0, "skipped_rejected": 0, "skipped_no_time": 0,
-    "skipped_followup_no_time": 0, "refreshed": 0,
+    "skipped_followup_no_time": 0, "skipped_followup_no_match": 0, "refreshed": 0,
 }
 _ids = count(1)
+MIDNIGHT = datetime(2026, 10, 2, 5, 0, tzinfo=timezone.utc)  # 00:00 CDT
 
 
 @pytest.fixture
@@ -445,11 +446,110 @@ def test_followup_with_time_merges_into_original(session, add):
     assert inc.occurred_at == T0  # the follow-up's publish date never moves it
 
 
-def test_followup_with_time_creates_incident(session, add):
-    add(is_followup=True, published_at=T0 + timedelta(days=2))
+def test_followup_without_match_creates_no_incident(session, add):
+    # A confident follow-up with a stated time is still not a new crime.
+    add(is_followup=True, confidence=0.95, published_at=T0 + timedelta(days=2))
+    counts = match_pending(session, threshold=85)
+    assert counts == {**NOTHING, "skipped_followup_no_match": 1}
+    assert incidents(session) == []
+    assert links(session) == 0
+
+
+def test_date_only_detention_story_creates_no_incident(session, add):
+    # Fox 2, 2026-10-06: "Police detain person of interest in connection to
+    # burglaries" was classified with the detention night as occurred_at.
+    add(crime_type="burglary", occurred_at=datetime(2026, 10, 6, 7, tzinfo=timezone.utc),
+        time_precision="date_only", location="9th St. and Allen Avenue",
+        neighborhood="Soulard", is_followup=True, confidence=0.95,
+        published_at=datetime(2026, 10, 6, 11, 13, tzinfo=timezone.utc))
+    counts = match_pending(session, threshold=85)
+    assert counts["created"] == 0
+    assert counts["skipped_followup_no_match"] == 1
+    assert incidents(session) == []
+
+
+# Eval case 25 as gemini-3.5-flash-lite classified it under prompt v6: the
+# detention day (Tue 00:00 CDT) guessed as the crime time.
+DETENTION = dict(
+    crime_type="burglary", occurred_at=datetime(2026, 10, 6, 5, tzinfo=timezone.utc),
+    time_precision="date_only", location="9th St. and Allen Avenue", neighborhood="Soulard",
+    is_followup=True, confidence=0.9,
+    published_at=datetime(2026, 10, 6, 11, 13, tzinfo=timezone.utc),
+)
+EARLY_TUESDAY = datetime(2026, 10, 6, 7, 30, tzinfo=timezone.utc)  # 02:30 CDT
+
+
+@pytest.mark.parametrize("precision", ["date_only", "exact"])
+def test_detention_story_never_moves_incident_time(session, add, precision):
+    # A real Soulard burglary, later than the detention story's guessed midnight.
+    add(crime_type="burglary", occurred_at=EARLY_TUESDAY, time_precision=precision,
+        location="Allen Avenue", neighborhood="Soulard", confidence=0.6,
+        published_at=EARLY_TUESDAY + timedelta(hours=3))
+    match_pending(session, threshold=85)
+    add(**DETENTION)
+    counts = match_pending(session, threshold=85)
+    assert counts["merged"] == 1  # it still enriches the incident...
+    [inc] = incidents(session)
+    assert len(inc.raw_items) == 2
+    assert inc.status == "confirmed"
+    # ...but its guessed time is ignored, by the merge and by the refresh.
+    assert inc.occurred_at == EARLY_TUESDAY
+    assert inc.time_estimated is (precision != "exact")
+    match_pending(session, threshold=85)
+    assert incidents(session)[0].occurred_at == EARLY_TUESDAY
+
+
+def test_exact_followup_time_still_replaces_estimated(session, add):
+    add(occurred_at=MIDNIGHT, time_precision="date_only")
+    add(occurred_at=MIDNIGHT + timedelta(hours=2), time_precision="exact",
+        is_followup=True, published_at=MIDNIGHT + timedelta(days=1))
     match_pending(session, threshold=85)
     [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (MIDNIGHT + timedelta(hours=2), False)
+
+
+def test_followup_before_original_links_on_later_run(session, add):
+    add(is_followup=True, occurred_at=T0 + timedelta(minutes=10),
+        published_at=T0 + timedelta(days=1))
+    assert match_pending(session, threshold=85) == {**NOTHING, "skipped_followup_no_match": 1}
+
+    add()  # the original report arrives later
+    counts = match_pending(session, threshold=85)
+    assert (counts["created"], counts["merged"], counts["skipped_followup_no_match"]) == (1, 1, 0)
+    [inc] = incidents(session)
+    assert len(inc.raw_items) == 2
     assert inc.occurred_at == T0
+
+
+def test_followup_enriches_existing_incident(session, add):
+    add(crime_type="shooting", location=None, neighborhood="Soulard", confidence=0.5)
+    match_pending(session, threshold=85)
+    add(crime_type="homicide", was_shooting=True, neighborhood="Soulard",
+        location="9th St. and Allen Avenue", is_followup=True, confidence=0.9,
+        occurred_at=T0 + timedelta(minutes=20), published_at=T0 + timedelta(days=1))
+    counts = match_pending(session, threshold=85)
+    assert counts == {**NOTHING, "merged": 1}
+    [inc] = incidents(session)
+    assert len(inc.raw_items) == 2
+    assert (inc.crime_type, inc.was_shooting, inc.location, inc.status) == (
+        "homicide", True, "9th St. and Allen Avenue", "confirmed"
+    )
+    assert inc.occurred_at == T0
+
+
+def test_followup_matching_rejected_incident_is_skipped(session, add):
+    add()
+    match_pending(session, threshold=85)
+    incidents(session)[0].status = "rejected"
+    session.commit()
+    add(is_followup=True, occurred_at=T0 + timedelta(minutes=5),
+        published_at=T0 + timedelta(days=1))
+    assert match_pending(session, threshold=85) == {**NOTHING, "skipped_rejected": 1}
+
+
+def test_first_report_still_creates_incident(session, add):
+    add(is_followup=False)
+    assert match_pending(session, threshold=85)["created"] == 1
 
 
 # --- refresh from re-classified linked items ---------------------------------
@@ -484,7 +584,6 @@ def test_refresh_uses_earliest_exact_time_across_items(session, add):
     assert incidents(session)[0].occurred_at == T0 + timedelta(hours=2)
 
 
-MIDNIGHT = datetime(2026, 10, 2, 5, 0, tzinfo=timezone.utc)  # 00:00 CDT
 
 
 def test_exact_time_beats_guessed_midnight_on_merge(session, add):
@@ -527,10 +626,11 @@ def test_refresh_leaves_time_alone_without_exact_times(session, add):
 
 
 def test_date_only_followup_is_linked_with_estimated_time(session, add):
-    add(occurred_at=MIDNIGHT, time_precision="date_only", is_followup=True,
+    add(occurred_at=MIDNIGHT, time_precision="date_only")
+    add(occurred_at=MIDNIGHT + timedelta(hours=1), time_precision="date_only", is_followup=True,
         published_at=MIDNIGHT + timedelta(days=3))
     counts = match_pending(session, threshold=85)
-    assert counts["created"] == 1
+    assert (counts["created"], counts["merged"]) == (1, 1)
     [inc] = incidents(session)
     assert (inc.occurred_at, inc.time_estimated) == (MIDNIGHT, True)
 
