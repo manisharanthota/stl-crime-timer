@@ -1,4 +1,5 @@
 import logging
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -267,6 +268,52 @@ def test_logging_writes_rotating_file_in_utc(tmp_path):
         root.handlers[:] = before
 
     assert "INFO jobs.test: hello pipeline" in text
+
+
+def _setup_logging_with_env(monkeypatch, tmp_path, log_to_file: str | None):
+    """Run setup_logging with LOG_TO_FILE from the environment only (no .env), log one
+    line, and return (stdout handlers added, file handlers added)."""
+    from logging.handlers import RotatingFileHandler
+
+    from config import get_settings
+
+    monkeypatch.setattr("config.load_dotenv", lambda: None)
+    if log_to_file is None:
+        monkeypatch.delenv("LOG_TO_FILE", raising=False)
+    else:
+        monkeypatch.setenv("LOG_TO_FILE", log_to_file)
+    get_settings.cache_clear()
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        setup_logging(tmp_path / "logs")
+        added = root.handlers[len(before):]
+        stdout = [
+            h for h in added
+            if type(h) is logging.StreamHandler and h.stream is sys.stdout
+        ]
+        files = [h for h in added if isinstance(h, RotatingFileHandler)]
+        return stdout, files
+    finally:
+        for h in root.handlers[len(before):]:
+            h.close()
+        root.handlers[:] = before
+        get_settings.cache_clear()
+
+
+def test_logging_to_file_by_default(monkeypatch, tmp_path):
+    stdout, files = _setup_logging_with_env(monkeypatch, tmp_path, None)
+    assert len(stdout) == 1
+    assert len(files) == 1
+    assert (tmp_path / "logs").is_dir()
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "FALSE"])
+def test_logging_stdout_only_when_log_to_file_false(monkeypatch, tmp_path, value):
+    stdout, files = _setup_logging_with_env(monkeypatch, tmp_path, value)
+    assert len(stdout) == 1
+    assert files == []
+    assert not (tmp_path / "logs").exists()
 
 
 def test_utc_formatter():

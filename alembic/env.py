@@ -12,12 +12,14 @@ import models  # noqa: F401  (registers tables on Base.metadata)
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# ConfigParser treats % as interpolation; URL-escaped passwords (%40) need %%.
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep loggers that already exist (app modules imported in-process, e.g. by tests).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Import model modules before this line so autogenerate sees their tables.
 target_metadata = Base.metadata

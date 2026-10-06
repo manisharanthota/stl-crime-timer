@@ -3,11 +3,12 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from alerts.checks import WATCHDOG_WINDOW, last_success
 from api import queries
 from api.schemas import (
     HealthResponse,
@@ -57,8 +58,20 @@ def index() -> FileResponse:
     return FileResponse(INDEX_HTML, media_type="text/html")
 
 
-@app.get("/health", response_model=HealthResponse)
-def health(session: Session = Depends(get_session)) -> HealthResponse:
+# HEAD too: uptime monitors (UptimeRobot) check with HEAD by default.
+@app.api_route(
+    "/health",
+    methods=["GET", "HEAD"],
+    response_model=HealthResponse,
+    responses={503: {"model": HealthResponse, "description": "Pipeline is stale"}},
+)
+def health(
+    response: Response,
+    session: Session = Depends(get_session),
+    now: datetime = Depends(get_now),
+) -> HealthResponse:
+    """503 when no pipeline run has succeeded in the last 30 minutes (or ever), so an
+    external uptime monitor notices when the scheduled runs stop."""
     run = session.scalars(
         select(PipelineRun).order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
     ).first()
@@ -67,7 +80,13 @@ def health(session: Session = Depends(get_session)) -> HealthResponse:
         last_run = LastRun(
             started_at=run.started_at, finished_at=run.finished_at, status=run.status
         )
-    return HealthResponse(status="ok", last_run=last_run)
+    success_at = last_success(session)
+    fresh = success_at is not None and now - success_at < WATCHDOG_WINDOW
+    if not fresh:
+        response.status_code = 503
+    return HealthResponse(
+        status="ok" if fresh else "stale", last_run=last_run, last_success_at=success_at
+    )
 
 
 @app.get("/timer", response_model=TimerResponse)

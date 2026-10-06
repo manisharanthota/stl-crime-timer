@@ -1,8 +1,21 @@
 .venv/
-.env
-*.db
 __pycache__/
 *.egg-info/
 .pytest_cache/
 .eval_cache.json
+
+# Secrets: never commit. .env.example (no values) is the template.
+.env
+.env.*
+!.env.example
+
+# Local databases and backups (stl_crime.db, stl_crime.db.bak-*, *.before-*.db, journals)
+*.db
+*.db.*
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Logs
 logs/
+*.log

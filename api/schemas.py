@@ -20,8 +20,9 @@ class LastRun(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    status: str
+    status: str  # "ok", or "stale" (served with HTTP 503)
     last_run: LastRun | None
+    last_success_at: UTC | None
 
 
 class LastIncident(BaseModel):

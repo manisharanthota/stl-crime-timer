@@ -90,6 +90,16 @@ def stored(session, sql):
     return session.execute(text(sql)).scalar()
 
 
+def assert_stored_utc(session, sql, expected: datetime) -> None:
+    """The raw stored value is that UTC instant: naive UTC text on SQLite, a
+    timestamptz (aware datetime) on Postgres."""
+    raw = stored(session, sql)
+    if isinstance(raw, str):
+        assert raw.startswith(expected.strftime("%Y-%m-%d %H:%M:%S"))
+    else:
+        assert raw.tzinfo is not None and raw == expected
+
+
 @pytest.mark.parametrize(
     "value, expected_utc",
     [
@@ -109,8 +119,7 @@ def test_datetimes_stored_as_utc_and_read_back_aware(session, item, value, expec
 
     assert c.occurred_at == expected_utc
     assert c.occurred_at.tzinfo is UTC
-    raw = stored(session, "SELECT occurred_at FROM classifications")
-    assert raw.startswith(expected_utc.strftime("%Y-%m-%d %H:%M:%S"))
+    assert_stored_utc(session, "SELECT occurred_at FROM classifications", expected_utc)
 
 
 def test_all_datetime_columns_are_utc(session, item):
@@ -121,10 +130,13 @@ def test_all_datetime_columns_are_utc(session, item):
 
     assert item.published_at == datetime(2026, 7, 4, 17, 0, tzinfo=UTC)
     assert item.source.last_success_at == datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
-    # Server-default created_at (SQLite CURRENT_TIMESTAMP is UTC) reads back aware UTC.
+    # Server-default created_at (SQLite CURRENT_TIMESTAMP is UTC; Postgres now() is
+    # timestamptz) reads back aware UTC.
     assert item.created_at.tzinfo is UTC
     assert abs(datetime.now(UTC) - item.created_at) < timedelta(minutes=1)
-    assert stored(session, "SELECT published_at FROM raw_items").startswith("2026-07-04 17:00:00")
+    assert_stored_utc(
+        session, "SELECT published_at FROM raw_items", datetime(2026, 7, 4, 17, 0, tzinfo=UTC)
+    )
 
 
 def test_filtering_compares_in_utc(session, item):

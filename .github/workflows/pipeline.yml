@@ -1,0 +1,58 @@
+# Scheduled fetch -> classify -> match run against the production database.
+# GitHub may start scheduled runs late (or skip one under load); /health turns 503 after
+# 30 minutes without a successful run, so an uptime monitor catches a stopped schedule.
+name: Pipeline
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # every 10 minutes (UTC)
+  workflow_dispatch: {}
+
+# One run at a time. A run that starts while another is going waits for it instead of
+# overlapping (the job_locks row is a second guard).
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25  # below the job lock's 30-minute expiry
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      GEMINI_FALLBACK_MODEL: ${{ secrets.GEMINI_FALLBACK_MODEL }}
+      GEMINI_RPM: ${{ secrets.GEMINI_RPM }}
+      MATCH_LOCATION_THRESHOLD: ${{ secrets.MATCH_LOCATION_THRESHOLD }}
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+      ALERT_ON_NEW_INCIDENT: ${{ secrets.ALERT_ON_NEW_INCIDENT }}
+      ALERT_COOLDOWN_HOURS: ${{ secrets.ALERT_COOLDOWN_HOURS }}
+      LOG_TO_FILE: "false"  # the runner is thrown away; logs go to the Actions log
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install .
+
+      - name: Check secrets
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is not set"; exit 1
+          fi
+
+      - name: Migrate database
+        run: alembic upgrade head
+
+      - name: Run pipeline once
+        run: python -m jobs once

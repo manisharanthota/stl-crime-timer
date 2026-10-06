@@ -1,0 +1,275 @@
+# Deploying STL Crime Tracker
+
+This guide walks you through putting the tracker online for free, step by step, from a
+Windows PC. You'll need about an hour the first time.
+
+## How the pieces fit
+
+```
+GitHub Actions (every 10 min)          Render (web service, free)
+  alembic upgrade head                   uvicorn api.main:app
+  python -m jobs once  ──writes──►  Supabase Postgres  ◄──reads──  /, /timer, /health ...
+        │                                                              ▲
+        └── Discord alerts (optional)                UptimeRobot ──────┘ checks /health
+```
+
+- **Supabase** hosts the Postgres database (free tier).
+- **GitHub Actions** runs the pipeline (fetch → classify → match) every 10 minutes. It
+  also applies database migrations before every run.
+- **Render** runs the website and API.
+- **UptimeRobot** checks `/health` every 5 minutes. `/health` answers **503** when no
+  pipeline run has succeeded in 30 minutes, so you get an email if GitHub Actions stops.
+  The checks also keep Render's free service from going to sleep.
+
+All commands below are for **PowerShell**, run from the project folder:
+
+```powershell
+cd C:\Users\manis\projects\stl-crime-tracker
+.venv\Scripts\activate
+```
+
+---
+
+## 0. Before you start
+
+1. Make sure the tests pass: `pytest`
+2. Make sure your local database is up to date: `alembic upgrade head`
+3. **Stop the local scheduler** if it's running (Ctrl+C in its window). From now on,
+   GitHub Actions runs the pipeline. Running both would use your Gemini quota twice.
+4. **Public or private repo?** Your repo page on GitHub shows "Public" or "Private"
+   next to its name.
+   - **Public**: GitHub Actions minutes are free and unlimited. Nothing to do.
+   - **Private**: the free plan includes 2,000 Actions minutes a month, and every run
+     bills at least 1 minute. A run every 10 minutes is about 4,300 runs a month, so a
+     private repo runs out of minutes around day 10 and the pipeline stops. Make the repo
+     public (Settings → General → Danger Zone → **Change visibility**). Your `.env`,
+     databases, and logs are never committed (see step 7), and GitHub secrets are never
+     visible to anyone, even on a public repo.
+
+---
+
+## 1. Supabase: create the database
+
+1. Go to <https://supabase.com> and sign up (signing in with GitHub is easiest).
+2. Click **New project**.
+   - **Name**: `stl-crime-tracker`
+   - **Database password**: click **Generate a password**, then **copy it into a password
+     manager now**. You can't see it again later (you can only reset it).
+     Tip: a password with only letters and digits avoids URL-escaping problems later.
+   - **Region**: *East US (Ohio)*. It's closest to Render's Ohio region and to St. Louis.
+   - Free plan. Click **Create new project** and wait a couple of minutes.
+3. Get the connection string:
+   - Click the **Connect** button at the top of the project page.
+   - Choose **Session pooler** (not "Direct connection": that one is IPv6-only, and
+     GitHub Actions and Render can't reach it; not "Transaction pooler" either).
+   - Copy the **URI**. It looks like:
+     ```
+     postgresql://postgres.abcdefghijklmnop:[YOUR-PASSWORD]@aws-0-us-east-2.pooler.supabase.com:5432/postgres
+     ```
+   - Replace `[YOUR-PASSWORD]` (including the brackets) with your database password.
+     If the password has symbols like `@ : / ? #`, they must be URL-escaped (`@` → `%40`,
+     `#` → `%23`, ...), or just reset the password to letters and digits.
+   - This full string is your **`DATABASE_URL`**. Treat it like a password.
+
+> Supabase pauses free projects after a week with no activity. The pipeline connects
+> every 10 minutes, so that won't happen while it's running.
+
+---
+
+## 2. Create the tables and copy your data
+
+You'll point this PowerShell window at Supabase temporarily. A variable set in the
+window wins over `.env`, and it disappears when you close the window.
+
+1. Set `DATABASE_URL` for this window only. `Read-Host` keeps the password out of your
+   PowerShell history:
+   ```powershell
+   $env:DATABASE_URL = Read-Host "Paste the Supabase Session pooler URI"
+   ```
+2. Create the tables in Supabase:
+   ```powershell
+   alembic upgrade head
+   ```
+   The last line should mention `alerts_sent` (the newest migration). If it hangs or
+   says `Network is unreachable`, double-check you copied the **Session pooler** URI.
+3. Copy your local data (`stl_crime.db`) into Supabase:
+   ```powershell
+   python scripts/copy_sqlite_to_postgres.py
+   ```
+   It prints a row count per table and `Done: ... rows copied, counts verified.`
+   - It refuses to run if Supabase already has data, so it can't double-copy. If it
+     failed halfway, nothing was written: fix the problem and run it again.
+   - "source database is at revision ...": run `alembic upgrade head` on the local
+     database first (in a **new** PowerShell window, where `DATABASE_URL` is still SQLite).
+   - Starting fresh without your old data? Skip this step.
+4. Clear the variable (or just close the window):
+   ```powershell
+   Remove-Item Env:DATABASE_URL
+   ```
+
+You can look at the tables in Supabase under **Table Editor**.
+
+---
+
+## 3. GitHub: secrets and the pipeline
+
+### 3a. Add the secrets
+
+On GitHub, open your repo → **Settings** → **Secrets and variables** → **Actions** →
+**New repository secret**. Add each of these (name exactly as shown, value without
+quotes):
+
+| Name | Required? | Value |
+|---|---|---|
+| `DATABASE_URL` | **yes** | the Supabase Session pooler URI from step 1 |
+| `GEMINI_API_KEY` | **yes** | your Gemini API key (same as in `.env`) |
+| `GEMINI_MODEL` | recommended | same as in your `.env` |
+| `GEMINI_FALLBACK_MODEL` | recommended | same as in your `.env` |
+| `ALERT_WEBHOOK_URL` | optional | your Discord webhook URL (alerts are only logged without it) |
+| `ALERT_ON_NEW_INCIDENT` | optional | `1` to get a Discord message for every new confirmed incident |
+| `GEMINI_RPM`, `LLM_PROVIDER`, `MATCH_LOCATION_THRESHOLD`, `ALERT_COOLDOWN_HOURS` | optional | only if you changed them in `.env` |
+
+A secret you don't add is treated as empty and the default is used. Secrets are
+never shown in logs (GitHub replaces them with `***`).
+
+### 3b. Push the code
+
+The workflows live in `.github/workflows/`. Scheduled runs only happen from the
+repo's **default branch** (`master`), so push there:
+
+```powershell
+git push origin master
+```
+
+### 3c. First run
+
+1. Open the repo's **Actions** tab. If GitHub asks, click **I understand my workflows,
+   go ahead and enable them**.
+2. You'll see two workflows:
+   - **Tests** runs `pytest` on every push (SQLite plus a throwaway Postgres). It never
+     touches your real database or Gemini.
+   - **Pipeline** runs every 10 minutes.
+3. Click **Pipeline** → **Run workflow** → **Run workflow** to start one now.
+4. Click the run, then the **run** job, to watch the logs. A good run ends with a line
+   like `Pipeline run 42 finished: success`. In Supabase's Table Editor,
+   `pipeline_runs` gets a new row.
+
+Good to know:
+- GitHub starts scheduled runs **late** (often 5–15 minutes, sometimes skips one when
+  busy). That's expected; the 30-minute health window allows for it.
+- Runs never overlap: a run that's due while another is still going waits for it.
+- **On a public repo, GitHub turns off scheduled workflows after 60 days with no commits.**
+  You'll get an email from GitHub, and UptimeRobot will alert. Re-enable it under
+  Actions → Pipeline → **Enable workflow**, or push any commit now and then.
+- The free Gemini quota (about 20 requests/day per model) is shared by all runs; the
+  classifier only calls Gemini when there are new crime-looking headlines, and it
+  switches to the fallback model or stops cleanly when the quota is used up.
+
+---
+
+## 4. Render: the website
+
+1. Go to <https://render.com> and sign up **with GitHub**.
+2. Make a long random admin token (you'll need it for the `/admin` endpoints):
+   ```powershell
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+   Save it in your password manager.
+3. In Render: **New** → **Blueprint** → connect your GitHub account if asked → pick the
+   `stl-crime-timer` repo. Render reads `render.yaml` and shows one web service,
+   `stl-crime-tracker`, on the free plan.
+4. Render asks for the values that `render.yaml` leaves blank:
+   - `DATABASE_URL`: the same Supabase Session pooler URI
+   - `ADMIN_TOKEN`: the token from step 2
+5. Click **Apply** / **Deploy**. The first build takes a few minutes. Watch the
+   **Logs** tab for `Uvicorn running on http://0.0.0.0:...`.
+6. Open the URL Render gives you (like `https://stl-crime-tracker.onrender.com`). You
+   should see the timer page. Also try `.../health`.
+
+Good to know:
+- Render redeploys automatically on every push to `master`. Migrations aren't run by
+  Render: the next Pipeline run applies them (or run Pipeline manually after a push
+  that adds a migration).
+- Free services **sleep after 15 minutes without visitors** and take about a minute to
+  wake up. UptimeRobot's checks (step 5) keep it awake. One always-on free service fits
+  within Render's free monthly hours.
+- Render's own health check uses `/`, not `/health`, on purpose: `/health` is 503
+  whenever the pipeline is late, and that shouldn't make Render think the website is
+  broken.
+- To use the admin endpoints from PowerShell:
+  ```powershell
+  $h = @{ "X-Admin-Token" = (Read-Host "Admin token") }
+  Invoke-RestMethod https://YOUR-APP.onrender.com/admin/review -Headers $h
+  Invoke-RestMethod https://YOUR-APP.onrender.com/admin/incidents/12/confirm -Method Post -Headers $h
+  ```
+
+---
+
+## 5. UptimeRobot: get told when something stops
+
+1. Sign up at <https://uptimerobot.com> (free plan).
+2. **New monitor**:
+   - **Type**: HTTP(s)
+   - **Friendly name**: `STL crime pipeline`
+   - **URL**: `https://YOUR-APP.onrender.com/health`
+   - **Interval**: 5 minutes
+   - **Alert contacts**: your email (and/or the mobile app)
+3. Save. Within a few minutes it should show **Up**.
+
+What the alerts mean:
+
+| `/health` | Meaning | What to do |
+|---|---|---|
+| 200 `"status": "ok"` | a pipeline run succeeded in the last 30 min | nothing |
+| 503 `"status": "stale"` | no successful run in 30 min (or ever) | check the **Actions** tab: is Pipeline running? failing? disabled? |
+| timeout / 5xx with no JSON | the website itself is down | check Render's **Logs** and **Events** |
+
+A run whose status is `partial` (one step failed, e.g. a feed was down) doesn't count
+as successful. If every run is partial for 30 minutes, `/health` goes stale. The
+`last_run` field in the `/health` response says what the latest run did.
+
+Right after you first deploy, `/health` is 503 until the first successful Pipeline
+run, which is expected.
+
+---
+
+## 6. Changing a secret later
+
+- **GitHub**: Settings → Secrets and variables → Actions → click the secret → **Update**.
+- **Render**: the service → **Environment** → edit → **Save changes** (it redeploys).
+- **Supabase password**: Project Settings → Database → **Reset database password**, then
+  update `DATABASE_URL` in **both** GitHub and Render.
+
+If a secret ever leaks (pasted somewhere public, committed by accident): reset it at
+the source first (new Gemini key, new Supabase password, delete and recreate the
+Discord webhook), then update GitHub and Render.
+
+---
+
+## 7. What never goes into git
+
+`.gitignore` keeps these out, and a test (`tests/test_repo_hygiene.py`) fails if
+any of them is ever committed:
+
+- `.env` (and `.env.*`, except the blank template `.env.example`)
+- databases: `*.db`, `stl_crime.db.bak-*`, `*.before-*.db`, journals
+- `logs/` and `*.log`
+
+Before committing, `git status` should never list any of these. On GitHub Actions the
+pipeline logs to the Actions log only (`LOG_TO_FILE=false`), and the webhook token is
+redacted from log lines.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `alembic upgrade head` hangs or "Network is unreachable" | You used the Direct connection URI. Use **Session pooler**. |
+| `password authentication failed` | Wrong password in the URI, or `[YOUR-PASSWORD]` brackets left in. Symbols in the password need URL-escaping. |
+| `prepared statement ... does not exist` | You used the Transaction pooler (port 6543). Use the Session pooler (port 5432). |
+| Pipeline log: `DATABASE_URL secret is not set` | Add the secret (name must match exactly) and re-run. |
+| Pipeline never runs on schedule | Workflows must be on `master` (the default branch); check Actions isn't disabled. |
+| Page loads but shows nothing | No confirmed incidents yet, or `DATABASE_URL` on Render points at an empty database. |
+| Copy script: "target already has rows" | Supabase already has data (maybe a Pipeline run happened first). To start over, disable the Pipeline workflow (Actions → Pipeline → ⋯ → **Disable workflow**), then in Supabase → **SQL Editor** run `truncate sources, raw_items, classifications, incidents, incident_items, pipeline_runs, job_locks, alerts_sent restart identity cascade;` (**this deletes all tracker data in Supabase**), run step 2.3 again, and re-enable the workflow. |
+| `/health` stuck at 503 though runs look fine | Runs are `partial`/`failed`. Open the latest run's log, or look at `pipeline_runs.*_error` in Supabase. |

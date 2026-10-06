@@ -1,0 +1,22 @@
+# Render Blueprint for the web app (API + page). The pipeline runs on GitHub Actions,
+# which also applies migrations, so this service only serves requests.
+# Python version comes from .python-version.
+services:
+  - type: web
+    name: stl-crime-tracker
+    runtime: python
+    plan: free
+    region: ohio
+    branch: master
+    buildCommand: pip install .
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    # Not /health: that returns 503 whenever the pipeline is stale, and Render would
+    # then treat the web app itself as broken (failed deploys, restarts).
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      # Values are set in the Render dashboard, never in this file.
+      - key: DATABASE_URL  # Supabase Session pooler URI
+        sync: false
+      - key: ADMIN_TOKEN  # long random string; protects /admin
+        sync: false

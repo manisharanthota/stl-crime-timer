@@ -223,15 +223,17 @@
       : "never";
   }
 
-  async function getJSON(path) {
+  // /health answers 503 (with the same body) when the pipeline is stale.
+  async function getJSON(path, alsoOk = []) {
     const r = await fetch(path, { cache: "no-store" });
-    if (!r.ok) throw new Error(`${path}: ${r.status}`);
+    if (!r.ok && !alsoOk.includes(r.status)) throw new Error(`${path}: ${r.status}`);
     return r.json();
   }
 
   async function refresh() {
     const results = await Promise.allSettled([
-      getJSON("/timer"), getJSON("/stats"), getJSON("/incidents?limit=20"), getJSON("/health"),
+      getJSON("/timer"), getJSON("/stats"), getJSON("/incidents?limit=20"),
+      getJSON("/health", [503]),
     ]);
     const [t, s, i, h] = results;
     if (t.status === "fulfilled") {

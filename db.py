@@ -49,5 +49,13 @@ def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
         cursor.close()
 
 
-engine = create_engine(get_settings().database_url)
+def make_engine(url: str, **kwargs) -> Engine:
+    """Engine for any supported URL. Postgres connections are checked before use:
+    hosted Postgres (Supabase) closes idle ones."""
+    if not url.startswith("sqlite"):
+        kwargs.setdefault("pool_pre_ping", True)
+    return create_engine(url, **kwargs)
+
+
+engine = make_engine(get_settings().database_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

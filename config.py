@@ -14,8 +14,19 @@ DEFAULT_PIPELINE_INTERVAL_MINUTES = 10.0
 DEFAULT_ALERT_COOLDOWN_HOURS = 6.0
 
 
-def _flag(value: str | None) -> bool:
-    return (value or "").strip().lower() in ("1", "true", "yes", "on")
+def _flag(value: str | None, default: bool = False) -> bool:
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def normalize_database_url(url: str) -> str:
+    """Point bare postgres:// / postgresql:// URLs (as Supabase gives them) at the
+    psycopg 3 driver; SQLAlchemy would otherwise look for psycopg2."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
 
 
 class Settings(BaseModel):
@@ -32,13 +43,16 @@ class Settings(BaseModel):
     alert_webhook_url: str | None = None
     alert_on_new_incident: bool = False
     alert_cooldown_hours: float = DEFAULT_ALERT_COOLDOWN_HOURS
+    log_to_file: bool = True
 
 
 @lru_cache
 def get_settings() -> Settings:
     load_dotenv()
     return Settings(
-        database_url=os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL,
+        database_url=normalize_database_url(
+            os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
+        ),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
         llm_provider=(os.getenv("LLM_PROVIDER") or "gemini").lower(),
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
@@ -57,4 +71,5 @@ def get_settings() -> Settings:
         alert_cooldown_hours=float(
             os.getenv("ALERT_COOLDOWN_HOURS") or DEFAULT_ALERT_COOLDOWN_HOURS
         ),
+        log_to_file=_flag(os.getenv("LOG_TO_FILE"), default=True),
     )

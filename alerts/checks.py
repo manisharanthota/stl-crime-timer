@@ -141,14 +141,15 @@ def check_new_incidents(session: Session, run: PipelineRun, now: datetime, send:
                 store.mark_sent(session, f"{prefix}:{incident.id}", now)
 
 
-def _last_success(session: Session) -> datetime | None:
+def last_success(session: Session) -> datetime | None:
+    """When the newest successful pipeline run finished (also used by /health)."""
     return session.scalar(
         select(func.max(PipelineRun.finished_at)).where(PipelineRun.status == "success")
     )
 
 
 def recover_watchdog(session: Session, now: datetime, send: Sender) -> None:
-    last = _last_success(session)
+    last = last_success(session)
     if last is not None and now - last < WATCHDOG_WINDOW:
         _recover(
             session, WATCHDOG_KEY,
@@ -161,7 +162,7 @@ def check_watchdog(
 ) -> None:
     """Alert if no run has succeeded in WATCHDOG_WINDOW, counted from the last success
     or `started_at` (when the scheduler started), whichever is later."""
-    last = _last_success(session)
+    last = last_success(session)
     reference = max((t for t in (last, started_at) if t is not None), default=None)
     if reference is not None and now - reference < WATCHDOG_WINDOW:
         recover_watchdog(session, now, send)

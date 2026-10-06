@@ -279,3 +279,27 @@ def test_alerts_sent_upgrade_and_downgrade(tmp_path, monkeypatch):
         engine.dispose()
     finally:
         get_settings.cache_clear()
+
+
+def test_fresh_migration_enforces_check_constraints(tmp_path, monkeypatch):
+    """The initial migration relies on the Enum columns' own CHECK constraints (the
+    duplicated explicit ones were removed for Postgres)."""
+    from sqlalchemy.exc import IntegrityError
+
+    cfg, db_url = _alembic(tmp_path, monkeypatch)
+    try:
+        command.upgrade(cfg, "head")
+    finally:
+        get_settings.cache_clear()
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        with pytest.raises(IntegrityError):
+            conn.execute(text(
+                "INSERT INTO incidents (crime_type, occurred_at) VALUES ('arson', '2026-10-04')"
+            ))
+        with pytest.raises(IntegrityError):
+            conn.execute(text(
+                "INSERT INTO incidents (crime_type, occurred_at, status) "
+                "VALUES ('shooting', '2026-10-04', 'bogus')"
+            ))
+    engine.dispose()
