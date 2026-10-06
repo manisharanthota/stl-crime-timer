@@ -15,7 +15,8 @@ GitHub Actions (every 10 min)          Render (web service, free)
 
 - **Supabase** hosts the Postgres database (free tier).
 - **GitHub Actions** runs the pipeline (fetch → classify → match) every 10 minutes. It
-  also applies database migrations before every run.
+  also applies database migrations before every run. Optionally, **cron-job.org**
+  triggers it on time through GitHub's API (step 3d); GitHub's own schedule is often late.
 - **Render** runs the website and API.
 - **UptimeRobot** checks `/health` every 5 minutes. `/health` answers **503** when no
   pipeline run has succeeded in 30 minutes, so you get an email if GitHub Actions stops.
@@ -168,6 +169,83 @@ Good to know:
   classifier only calls Gemini when there are new crime-looking headlines, and it
   switches to the fallback model or stops cleanly when the quota is used up.
 
+### 3d. Optional: on-time runs from cron-job.org
+
+GitHub's own schedule is often late or skips runs (see above). cron-job.org (free) can
+start the Pipeline workflow on time instead, through GitHub's `workflow_dispatch` API.
+That's the same thing as clicking **Run workflow**. It needs a GitHub token, which you
+make **only able to run Actions on this one repo**.
+
+**1. Make a fine-grained token**
+
+1. On GitHub, click your avatar → **Settings** → **Developer settings** →
+   **Personal access tokens** → **Fine-grained tokens** → **Generate new token**.
+2. Fill in:
+   - **Token name**: `cron-job.org pipeline trigger`
+   - **Expiration**: 1 year at most. Put a reminder in your calendar a week before it
+     ends (see *Renewing the token* below).
+   - **Resource owner**: your account.
+   - **Repository access**: **Only select repositories** → `stl-crime-timer`.
+   - **Permissions** → **Repository permissions** → **Actions**: **Read and write**.
+     Leave everything else at **No access**. GitHub adds **Metadata: Read-only** by
+     itself; that's required and harmless.
+3. **Generate token** and copy it (starts with `github_pat_`). You can't see it again.
+   Don't save it in a file in the project.
+
+What this token can do: start, re-run, cancel and delete workflow runs, and turn
+workflows on or off, on this repo only. It can't read or change your code, secrets,
+or any other repo.
+
+**2. Test it from PowerShell** (optional, but tells you the token works before
+cron-job.org is involved). Paste your token into the first line, then run:
+
+```powershell
+$token = "github_pat_PASTE_HERE"
+Invoke-WebRequest -UseBasicParsing -Method Post `
+  -Uri "https://api.github.com/repos/manisharanthota/stl-crime-timer/actions/workflows/pipeline.yml/dispatches" `
+  -Headers @{ Authorization = "Bearer $token"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" } `
+  -ContentType "application/json" -Body '{"ref":"master"}'
+```
+
+`StatusCode : 204` (no content) means it worked: a new **Pipeline** run appears in the
+Actions tab within a few seconds, marked as triggered by `workflow_dispatch`. Close the
+PowerShell window afterwards so the token isn't left in it.
+
+**3. Create the cron job**
+
+1. Sign up at <https://cron-job.org> and go to **Cronjobs** → **Create cronjob**.
+2. **Common** tab:
+   - **Title**: `STL crime pipeline`
+   - **URL**:
+     `https://api.github.com/repos/manisharanthota/stl-crime-timer/actions/workflows/pipeline.yml/dispatches`
+   - **Execution schedule**: every 10 minutes.
+   - **Notify me when**: execution fails (and *after the job is disabled*).
+3. **Advanced** tab:
+   - **Request method**: `POST`
+   - **Headers** (add one row each):
+
+     | Key | Value |
+     |---|---|
+     | `Authorization` | `Bearer github_pat_...` (your token, with `Bearer ` in front) |
+     | `Accept` | `application/vnd.github+json` |
+     | `X-GitHub-Api-Version` | `2022-11-28` |
+     | `Content-Type` | `application/json` |
+
+   - **Request body**: `{"ref":"master"}`
+4. **Create**, then open the job and use **Test run**. It should answer **204**, and a
+   Pipeline run shows up in the Actions tab.
+
+**Should the GitHub schedule stay on?** Yes, as a backup: if cron-job.org stops, the
+GitHub schedule keeps the pipeline going. Two triggers don't double the work. Runs
+never overlap (a run that's due while another is going waits, and GitHub keeps at most
+one waiting). An extra run only fetches feeds; only new crime-looking headlines reach
+the LLM.
+
+**Renewing the token**: before it expires, open the token on GitHub → **Regenerate
+token** (same permissions), then paste the new value into the job's `Authorization`
+header on cron-job.org (keep `Bearer ` in front). If the token ever leaks, delete it
+on GitHub's token page first, then make a new one.
+
 ---
 
 ## 4. Render: the website
@@ -255,6 +333,8 @@ run, which is expected.
 - **Render**: the service → **Environment** → edit → **Save changes** (it redeploys).
 - **Supabase password**: Project Settings → Database → **Reset database password**, then
   update `DATABASE_URL` in **both** GitHub and Render.
+- **cron-job.org token** (step 3d): regenerate it on GitHub, then update the job's
+  `Authorization` header.
 
 If a secret ever leaks (pasted somewhere public, committed by accident): reset it at
 the source first (new Gemini key, new Supabase password, delete and recreate the
@@ -288,6 +368,10 @@ redacted from log lines.
 | Render build: `No matching distribution` / wrong Python | Render reads `.python-version` (3.13). Remove any `PYTHON_VERSION` env var you added in the dashboard, or set it to a full version like `3.13.5`. |
 | Pipeline log: `DATABASE_URL secret is not set` | Add the secret (name must match exactly) and re-run. |
 | Pipeline never runs on schedule | Workflows must be on `master` (the default branch); check Actions isn't disabled. |
+| cron-job.org: **401** | Token wrong, expired or revoked, or `Bearer ` missing in front of it. Regenerate it (step 3d). |
+| cron-job.org: **403** "Resource not accessible by personal access token" | The token lacks **Actions: Read and write**, or `stl-crime-timer` isn't among its selected repositories. |
+| cron-job.org: **404** | Typo in the URL (owner, repo, or `pipeline.yml`), or the token can't see the repo. GitHub answers 404 instead of 403 for repos a token can't access. |
+| cron-job.org: **422** | Body isn't `{"ref":"master"}` (or `Content-Type` is missing), or the workflow is disabled: re-enable it under Actions → Pipeline. |
 | Page loads but shows nothing | No confirmed incidents yet, or `DATABASE_URL` on Render points at an empty database. |
 | Copy script: "target already has rows" | Supabase already has data (maybe a Pipeline run happened first). To start over, disable the Pipeline workflow (Actions → Pipeline → ⋯ → **Disable workflow**), then in Supabase → **SQL Editor** run `truncate sources, raw_items, classifications, incidents, incident_items, pipeline_runs, job_locks, alerts_sent restart identity cascade;` (**this deletes all tracker data in Supabase**), run step 2.3 again, and re-enable the workflow. |
 | `/health` stuck at 503 though runs look fine | Runs are `partial`/`failed`. Open the latest run's log, or look at `pipeline_runs.*_error` in Supabase. |
