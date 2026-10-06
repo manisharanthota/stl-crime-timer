@@ -24,6 +24,12 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+      LLM_CHAIN: ${{ secrets.LLM_CHAIN }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_RPM: ${{ secrets.GROQ_RPM }}
+      GROQ_TPM: ${{ secrets.GROQ_TPM }}
+      GROQ_OTPM: ${{ secrets.GROQ_OTPM }}
+      GROQ_REASONING_EFFORT: ${{ secrets.GROQ_REASONING_EFFORT }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
       GEMINI_FALLBACK_MODEL: ${{ secrets.GEMINI_FALLBACK_MODEL }}

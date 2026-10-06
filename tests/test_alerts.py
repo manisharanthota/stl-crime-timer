@@ -214,10 +214,10 @@ def test_failed_recovery_send_is_retried(session, hook):
 
 
 def test_quota_alert_and_recovery(session, hook, monkeypatch):
-    set_env(monkeypatch, GEMINI_MODEL="primary-m", GEMINI_FALLBACK_MODEL="fallback-m")
+    set_env(monkeypatch, LLM_CHAIN="", GEMINI_MODEL="primary-m", GEMINI_FALLBACK_MODEL="fallback-m")
     stopped = add_run(session, classify_counts={"stopped_quota": 1, "classified": 3})
     checks.check_quota(session, stopped, NOW, hook.send)
-    assert "primary-m, fallback-m" in hook.messages[0]
+    assert "gemini:primary-m, gemini:fallback-m" in hook.messages[0]
 
     checks.check_quota(session, stopped, NOW + timedelta(minutes=10), hook.send)
     assert len(hook.messages) == 1  # cooldown
@@ -229,6 +229,13 @@ def test_quota_alert_and_recovery(session, hook, monkeypatch):
     working = add_run(session, classify_counts={"stopped_quota": 0, "classified": 2})
     checks.check_quota(session, working, NOW + timedelta(hours=8), hook.send)
     assert "classifying again" in hook.messages[1]
+
+
+def test_quota_alert_names_llm_chain(session, hook, monkeypatch):
+    set_env(monkeypatch, LLM_CHAIN="groq:g-model, gemini:primary-m")
+    run = add_run(session, classify_counts={"stopped_quota": 1})
+    checks.check_quota(session, run, NOW, hook.send)
+    assert "groq:g-model, gemini:primary-m" in hook.messages[0]
 
 
 def test_primary_only_quota_does_not_alert(session, hook):

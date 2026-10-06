@@ -125,9 +125,12 @@ quotes):
 | `GEMINI_API_KEY` | **yes** | your Gemini API key (same as in `.env`) |
 | `GEMINI_MODEL` | recommended | same as in your `.env` |
 | `GEMINI_FALLBACK_MODEL` | recommended | same as in your `.env` |
+| `LLM_CHAIN` | optional | same as in your `.env` (e.g. `groq:openai/gpt-oss-120b,gemini:gemini-3.8-flash,gemini:gemini-3.5-flash-lite`); empty = the `GEMINI_*` models |
+| `GROQ_API_KEY` | if `LLM_CHAIN` has a `groq:` entry | your Groq API key |
+| `GROQ_OTPM` | if the Groq model has an output-token limit | e.g. `1000` for qwen (same as in your `.env`) |
 | `ALERT_WEBHOOK_URL` | optional | your Discord webhook URL (alerts are only logged without it) |
 | `ALERT_ON_NEW_INCIDENT` | optional | `1` to get a Discord message for every new confirmed incident |
-| `GEMINI_RPM`, `LLM_PROVIDER`, `MATCH_LOCATION_THRESHOLD`, `ALERT_COOLDOWN_HOURS` | optional | only if you changed them in `.env` |
+| `GEMINI_RPM`, `GROQ_RPM`, `GROQ_TPM`, `GROQ_REASONING_EFFORT`, `LLM_PROVIDER`, `MATCH_LOCATION_THRESHOLD`, `ALERT_COOLDOWN_HOURS` | optional | only if you changed them in `.env` |
 
 A secret you don't add is treated as empty and the default is used. Secrets are
 never shown in logs (GitHub replaces them with `***`).

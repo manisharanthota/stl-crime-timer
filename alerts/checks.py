@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from alerts import notify, store
+from classifier.providers import chain_names
 from config import get_settings
 from models import Incident, PipelineRun, RawItem, Source
 from timeutil import to_local
@@ -72,8 +73,7 @@ def check_sources(session: Session, now: datetime, send: Sender) -> None:
 def check_quota(session: Session, run: PipelineRun, now: datetime, send: Sender) -> None:
     counts = run.classify_counts or {}
     if counts.get("stopped_quota"):
-        settings = get_settings()
-        models = ", ".join(m for m in (settings.gemini_model, settings.gemini_fallback_model) if m)
+        models = ", ".join(chain_names(get_settings()))
         _alert(
             session, QUOTA_KEY,
             f"🟠 LLM quota: every model ({models}) hit its daily quota. "

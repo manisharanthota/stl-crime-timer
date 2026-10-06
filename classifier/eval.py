@@ -1,12 +1,15 @@
 """Score the real classifier against hand-labeled headlines: `python -m classifier.eval`.
 
-Calls the live LLM (needs GEMINI_API_KEY) in batches, caching results in
-.eval_cache.json so reruns don't spend quota. Run manually; pytest does not collect it.
+Calls the live LLM in batches: the chain's first model by default, or one picked with
+--provider provider:model (--model NAME is short for --provider gemini:NAME). Results
+are cached in .eval_cache.json so reruns don't spend quota. Run manually; pytest does
+not collect it.
 """
 
 import argparse
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime
 from pathlib import Path
@@ -18,9 +21,9 @@ from classifier.classify import (
     LLMUnavailable,
     QuotaExhausted,
     classify_batch,
-    make_limiter,
+    take_batch,
 )
-from classifier.llm import get_llm_client
+from classifier.providers import ChainEntry, build_entry, chain_specs, parse_chain
 from classifier.prefilter import prefilter
 from classifier.prompt import PROMPT_VERSION
 from classifier.schema import ClassifierOutput
@@ -63,10 +66,16 @@ def save_cache(path: Path, cache: dict[str, dict]) -> None:
     path.write_text(json.dumps(cache, indent=1, sort_keys=True), encoding="utf-8")
 
 
+def cache_model(model: str) -> str:
+    """Gemini models keep their bare name, so results cached before models were
+    named provider:model still count."""
+    return model.removeprefix("gemini:")
+
+
 def cache_key(case: dict, model: str) -> str:
     """Changes whenever the model, prompt version, or case text changes."""
     parts = [
-        model, PROMPT_VERSION, case["title"], case.get("body") or "", case.get("published_at") or ""
+        cache_model(model), PROMPT_VERSION, case["title"], case.get("body") or "", case.get("published_at") or ""
     ]
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
@@ -82,11 +91,13 @@ def to_item(case: dict, item_id: int) -> RawItem:
 
 
 def predict_all(
-    cases: list[dict], llm, cache: dict[str, dict], use_cache: bool, sleep=time.sleep
+    cases: list[dict], entry: ChainEntry, cache: dict[str, dict], use_cache: bool,
+    sleep=time.sleep,
 ) -> tuple[dict[int, ClassifierOutput], str | None]:
     """Returns ({case index: prediction}, error message if the run stopped early).
     Cases that fail the prefilter are predicted not-crime without the LLM; new LLM
     results are written into `cache`."""
+    llm = entry.client
     preds: dict[int, ClassifierOutput] = {}
     pending: list[RawItem] = []
     for i, case in enumerate(cases):
@@ -99,15 +110,17 @@ def predict_all(
         else:
             pending.append(item)
 
-    limiter = make_limiter(sleep)
-    for start in range(0, len(pending), BATCH_SIZE):
-        batch = pending[start : start + BATCH_SIZE]
+    start = 0
+    while start < len(pending):
+        batch = take_batch(pending, start, entry.batch_size(BATCH_SIZE), entry.max_batch_tokens)
+        start += len(batch)
         try:
-            results = classify_batch(batch, llm, limiter, sleep)
-        except QuotaExhausted:
-            return preds, "daily quota exhausted"
+            results = classify_batch(batch, llm, entry.limiter, sleep)
+        except QuotaExhausted as exc:
+            return preds, f"quota exhausted: {exc}"
         except LLMUnavailable as exc:
             return preds, f"LLM unavailable: {exc}"
+        print(format_usage(len(batch), getattr(llm, "last_usage", None)))
         for item in batch:
             if item.id in results:
                 fields = results[item.id].model_dump(exclude={"raw_item_id"})
@@ -117,14 +130,28 @@ def predict_all(
     return preds, None
 
 
+def format_usage(n_items: int, usage) -> str:
+    """One line of token usage for a batch (the last request, if it was retried)."""
+    if usage is None or usage.total_tokens is None:
+        return f"Batch of {n_items}: no token usage reported"
+    reasoning = f" (reasoning {usage.reasoning_tokens})" if usage.reasoning_tokens else ""
+    return (
+        f"Batch of {n_items}: prompt {usage.prompt_tokens}, completion "
+        f"{usage.completion_tokens}{reasoning}, total {usage.total_tokens}"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_PATH)
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
-    parser.add_argument(
-        "--model",
-        help="model to evaluate instead of GEMINI_MODEL (e.g. the GEMINI_FALLBACK_MODEL)",
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument(
+        "--provider", metavar="PROVIDER:MODEL",
+        help="model to evaluate instead of the chain's first, e.g. groq:openai/gpt-oss-120b",
     )
+    which.add_argument("--model", help="short for --provider gemini:MODEL")
     parser.add_argument(
         "--no-cache", action="store_true",
         help="ignore cached results (fresh results are still saved)",
@@ -133,12 +160,22 @@ def main(argv: list[str] | None = None) -> None:
 
     cases = load_cases(args.path)
     settings = get_settings()
-    if args.model:
-        settings = settings.model_copy(update={"gemini_model": args.model})
-    llm = get_llm_client(settings)
-    print(f"Model: {llm.model} (prompt {PROMPT_VERSION})")
+    if args.provider:
+        try:
+            specs = parse_chain(args.provider)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if len(specs) != 1:
+            parser.error("--provider takes one provider:model")
+        [(provider, model)] = specs
+    elif args.model:
+        provider, model = "gemini", args.model
+    else:
+        provider, model = chain_specs(settings)[0]
+    entry = build_entry(provider, model, settings)
+    print(f"Model: {entry.client.model} (prompt {PROMPT_VERSION})")
     cache = load_cache(args.cache)
-    preds, error = predict_all(cases, llm, cache, use_cache=not args.no_cache)
+    preds, error = predict_all(cases, entry, cache, use_cache=not args.no_cache)
     save_cache(args.cache, cache)
 
     field_hits = {f: 0 for f in FIELDS}

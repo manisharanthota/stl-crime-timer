@@ -16,11 +16,11 @@ from classifier.llm import (
     LLMError,
     RateLimitError,
     ServiceUnavailableError,
-    get_fallback_client,
     get_llm_client,
     parse_retry_delay,
 )
 from classifier.prefilter import prefilter
+from classifier.providers import ChainEntry
 from classifier.prompt import PROMPT_VERSION, SYSTEM_PROMPT, build_user_prompt
 from classifier.ratelimit import RateLimiter, interval_for_rpm
 from classifier.schema import BatchResult, ClassifierOutput
@@ -180,7 +180,7 @@ def test_all_prefiltered_needs_no_llm_client(session, make_item, monkeypatch):
     def boom(*a, **k):
         raise AssertionError("LLM client should not be created")
 
-    monkeypatch.setattr("classifier.classify.get_llm_client", boom)
+    monkeypatch.setattr("classifier.classify.build_chain", boom)
     assert classify_pending(session)["prefiltered"] == 1
 
 
@@ -441,30 +441,31 @@ def fallback_llm(*responses):
     return llm
 
 
-def test_fallback_classifies_after_primary_503s(session, make_item, run_fb, sleeps):
+def test_fallback_classifies_after_primary_503(session, make_item, run_fb, sleeps):
     item = make_item()
-    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3)
+    primary = FakeLLM(ServiceUnavailableError("503"))
     fallback = fallback_llm(echo())
 
     counts = run_fb(primary, fallback)
 
-    assert len(primary.calls) == 3  # first try + 2 retries
+    assert len(primary.calls) == 1  # no backoff while a later model is available
     assert len(fallback.calls) == 1
-    assert sleeps == [5, 15]  # primary backoff only
+    assert sleeps == []
     assert item.status == "classified"
     [c] = classifications(session)
     assert c.model == "fake-fallback"
     assert (counts["classified"], counts["fallback"], counts["deferred"]) == (1, 1, 0)
 
 
-def test_fallback_503_defers_without_more_backoff(make_item, run_fb, sleeps):
+def test_last_model_backs_off_then_defers(make_item, run_fb, sleeps):
     item = make_item()
-    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3)
-    fallback = fallback_llm(ServiceUnavailableError("503"))
+    primary = FakeLLM(ServiceUnavailableError("503"))
+    fallback = fallback_llm(*[ServiceUnavailableError("503")] * 3)
 
     counts = run_fb(primary, fallback)
 
-    assert len(fallback.calls) == 1
+    assert len(primary.calls) == 1
+    assert len(fallback.calls) == 3  # the last model left gets the backoff
     assert sleeps == [5, 15]
     assert (item.status, item.retries) == ("new", 0)
     assert (counts["deferred"], counts["fallback"]) == (1, 0)
@@ -482,12 +483,13 @@ def test_fallback_not_used_for_non_503_errors(make_item, run_fb):
     assert item.status == "new"
 
 
-def test_fallback_not_used_when_last_error_is_not_503(make_item, run_fb):
+def test_503_after_other_error_moves_to_fallback(make_item, run_fb, sleeps):
     make_item()
-    primary = FakeLLM(*[ServiceUnavailableError("503")] * 2, LLMError("500 internal"))
+    primary = FakeLLM(LLMError("500 internal"), ServiceUnavailableError("503"))
     fallback = fallback_llm(echo())
-    assert run_fb(primary, fallback)["deferred"] == 1
-    assert fallback.calls == []
+    assert run_fb(primary, fallback)["fallback"] == 1
+    assert sleeps == [5]  # backoff for the 500 only
+    assert len(fallback.calls) == 1
 
 
 def test_fallback_not_called_when_primary_answers(session, make_item, run_fb):
@@ -556,13 +558,13 @@ def test_primary_quota_without_fallback_stops_run(make_item, run_fb):
 def test_after_quota_switch_fallback_503_defers_batch_and_continues(make_item, run_fb, sleeps):
     items = [make_item() for _ in range(15)]
     primary = FakeLLM(QUOTA)
-    fallback = fallback_llm(ServiceUnavailableError("503"), echo())
+    fallback = fallback_llm(*[ServiceUnavailableError("503")] * 3, echo())
 
     counts = run_fb(primary, fallback)
 
     assert len(primary.calls) == 1
-    assert len(fallback.calls) == 2  # one attempt per batch, no backoff
-    assert sleeps == []
+    assert len(fallback.calls) == 4  # now the last model: backoff, then batch 2
+    assert sleeps == [5, 15]
     assert all(i.status == "new" for i in items[:10])
     assert all(i.status == "classified" for i in items[10:])
     assert (counts["deferred"], counts["fallback"], counts["stopped_quota"]) == (10, 5, 0)
@@ -570,7 +572,7 @@ def test_after_quota_switch_fallback_503_defers_batch_and_continues(make_item, r
 
 def test_overloaded_primary_and_fallback_quota_defers_and_keeps_primary(make_item, run_fb):
     items = [make_item() for _ in range(15)]
-    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3, echo())
+    primary = FakeLLM(ServiceUnavailableError("503"), echo())
     fallback = fallback_llm(QUOTA)
 
     counts = run_fb(primary, fallback)
@@ -585,27 +587,29 @@ def test_overloaded_primary_and_fallback_quota_defers_and_keeps_primary(make_ite
 def test_overloaded_primary_after_fallback_quota_gets_no_fallback(make_item, run_fb, sleeps):
     for _ in range(15):
         make_item()
-    # Batch 1: 503s -> fallback quota. Batch 2: 503s again, fallback is gone.
-    primary = FakeLLM(*[ServiceUnavailableError("503")] * 6)
+    # Batch 1: 503 -> fallback quota. Batch 2: 503s again, fallback is gone, so the
+    # primary is the last model and backs off.
+    primary = FakeLLM(*[ServiceUnavailableError("503")] * 4)
     fallback = fallback_llm(QUOTA)
 
     counts = run_fb(primary, fallback)
 
     assert len(fallback.calls) == 1
-    assert sleeps == [5, 15, 5, 15]
+    assert len(primary.calls) == 4
+    assert sleeps == [5, 15]
     assert (counts["deferred"], counts["stopped_quota"]) == (15, 0)
 
 
 def test_each_batch_tries_primary_first(make_item, run_fb):
     for _ in range(11):
         make_item()
-    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3, echo())
+    primary = FakeLLM(ServiceUnavailableError("503"), echo())
     fallback = fallback_llm(echo())
 
     counts = run_fb(primary, fallback)
 
     assert len(fallback.calls) == 1  # first batch only
-    assert len(primary.calls) == 4  # second batch went to the primary
+    assert len(primary.calls) == 2  # second batch went to the primary
     assert (counts["classified"], counts["fallback"]) == (11, 10)
 
 
@@ -619,16 +623,18 @@ def test_injected_llm_does_not_load_fallback_from_settings(make_item, run, monke
     def boom(*a, **k):
         raise AssertionError("fallback loaded from settings")
 
-    monkeypatch.setattr("classifier.classify.get_fallback_client", boom)
+    monkeypatch.setattr("classifier.classify.build_chain", boom)
     make_item()
     assert run(FakeLLM(*[ServiceUnavailableError("503")] * 3))["deferred"] == 1
 
 
 def test_default_clients_come_from_settings(session, make_item, monkeypatch, sleeps):
-    primary = FakeLLM(*[ServiceUnavailableError("503")] * 3)
+    primary = FakeLLM(ServiceUnavailableError("503"))
     fallback = fallback_llm(echo())
-    monkeypatch.setattr("classifier.classify.get_llm_client", lambda: primary)
-    monkeypatch.setattr("classifier.classify.get_fallback_client", lambda: fallback)
+    monkeypatch.setattr(
+        "classifier.classify.build_chain",
+        lambda sleep: [ChainEntry(primary, RateLimiter(9)), ChainEntry(fallback, RateLimiter(9))],
+    )
     make_item()
 
     counts = classify_pending(session, sleep=sleeps.append, limiter=RateLimiter(0))
@@ -958,17 +964,7 @@ def test_get_llm_client_gemini(monkeypatch):
     fake_genai(monkeypatch, "[]")
     client = get_llm_client(Settings(llm_provider="gemini", gemini_api_key="k", gemini_model="m"))
     assert isinstance(client, GeminiClient)
-    assert client.model == "m"
-
-
-def test_get_fallback_client(monkeypatch):
-    fake_genai(monkeypatch, "[]")
-    base = {"llm_provider": "gemini", "gemini_api_key": "k", "gemini_model": "primary"}
-    client = get_fallback_client(Settings(**base, gemini_fallback_model="backup"))
-    assert isinstance(client, GeminiClient)
-    assert client.model == "backup"
-    assert get_fallback_client(Settings(**base)) is None
-    assert get_fallback_client(Settings(**base, gemini_fallback_model="primary")) is None
+    assert client.model == "gemini:m"
 
 
 def test_fallback_model_read_from_env(monkeypatch):
@@ -1048,14 +1044,13 @@ def eval_env(monkeypatch, tmp_path):
     def make(*responses):
         llm = FakeLLM(*responses)
         llms.append(llm)
-        def client(settings=None):
-            llms_settings.append(settings)
-            return llm
+        def entry(provider, model, settings=None):
+            llms_settings.append((provider, model))
+            return ChainEntry(llm, RateLimiter(0))
 
-        monkeypatch.setattr(eval_script, "get_llm_client", client)
+        monkeypatch.setattr(eval_script, "build_entry", entry)
         return llm
 
-    monkeypatch.setattr(eval_script, "make_limiter", lambda sleep: RateLimiter(0))
     return SimpleNamespace(cases=cases, cache=cache, make=make, settings=llms_settings)
 
 
@@ -1119,7 +1114,7 @@ def test_eval_quota_stop_reports_partial(eval_env, capsys):
     eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
 
     out = capsys.readouterr().out
-    assert "daily quota exhausted" in out
+    assert "quota exhausted" in out
     assert "2 case(s) not scored" in out
 
 
@@ -1182,7 +1177,7 @@ def test_eval_model_flag_overrides_gemini_model(eval_env, capsys):
     llm = eval_env.make(echo())
     llm.model = "backup-model"
     eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache), "--model", "backup-model"])
-    assert eval_env.settings[-1].gemini_model == "backup-model"
+    assert eval_env.settings[-1] == ("gemini", "backup-model")
     assert "Model: backup-model" in capsys.readouterr().out
 
 
@@ -1190,10 +1185,11 @@ def test_eval_defaults_to_gemini_model(eval_env, monkeypatch):
     from config import get_settings
 
     monkeypatch.setenv("GEMINI_MODEL", "primary-model")
+    monkeypatch.setenv("LLM_CHAIN", "")  # blank: .env can't fill it in
     get_settings.cache_clear()
     try:
         eval_env.make(echo())
         eval_script.main([str(eval_env.cases), "--cache", str(eval_env.cache)])
-        assert eval_env.settings[-1].gemini_model == "primary-model"
+        assert eval_env.settings[-1] == ("gemini", "primary-model")
     finally:
         get_settings.cache_clear()
