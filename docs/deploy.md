@@ -183,6 +183,19 @@ Good to know:
    - `ADMIN_TOKEN`: the token from step 2
 5. Click **Apply** / **Deploy**. The first build takes a few minutes. Watch the
    **Logs** tab for `Uvicorn running on http://0.0.0.0:...`.
+
+> **This project uses pip, not Poetry.** There's no Poetry config or `poetry.lock`,
+> and you don't need to set `POETRY_VERSION` or anything else Poetry-related.
+> The build log should show `python -m pip install ...`. If it shows `poetry install`
+> instead, the service wasn't created from the Blueprint (with **New → Web Service**,
+> Render ignores `render.yaml` and guesses Poetry from `pyproject.toml`). Fix it in the
+> dashboard: the service → **Settings** → **Build & Deploy**:
+> - **Build Command**: `python -m pip install --upgrade pip && python -m pip install .`
+> - **Start Command**: `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+> - **Health Check Path** (under Settings → Health Checks): `/`
+>
+> Save, then **Manual Deploy** → **Deploy latest commit**. If you added a
+> `POETRY_VERSION` environment variable while troubleshooting, delete it; it isn't used.
 6. Open the URL Render gives you (like `https://stl-crime-tracker.onrender.com`). You
    should see the timer page. Also try `.../health`.
 
@@ -268,6 +281,8 @@ redacted from log lines.
 | `alembic upgrade head` hangs or "Network is unreachable" | You used the Direct connection URI. Use **Session pooler**. |
 | `password authentication failed` | Wrong password in the URI, or `[YOUR-PASSWORD]` brackets left in. Symbols in the password need URL-escaping. |
 | `prepared statement ... does not exist` | You used the Transaction pooler (port 6543). Use the Session pooler (port 5432). |
+| Render build log runs `poetry install` and fails | The service was made with New → Web Service, so `render.yaml` is ignored. Set the Build Command to `python -m pip install --upgrade pip && python -m pip install .` in the service's Settings (see the pip note in step 4). No `POETRY_VERSION` needed. |
+| Render build: `No matching distribution` / wrong Python | Render reads `.python-version` (3.13). Remove any `PYTHON_VERSION` env var you added in the dashboard, or set it to a full version like `3.13.5`. |
 | Pipeline log: `DATABASE_URL secret is not set` | Add the secret (name must match exactly) and re-run. |
 | Pipeline never runs on schedule | Workflows must be on `master` (the default branch); check Actions isn't disabled. |
 | Page loads but shows nothing | No confirmed incidents yet, or `DATABASE_URL` on Render points at an empty database. |

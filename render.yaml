@@ -8,7 +8,10 @@ services:
     plan: free
     region: ohio
     branch: master
-    buildCommand: pip install .
+    # pip, not Poetry: the project has no Poetry config or lock file. Render only uses
+    # this for services created from this Blueprint; a service made with "New > Web
+    # Service" uses the Build Command in its dashboard Settings instead.
+    buildCommand: python -m pip install --upgrade pip && python -m pip install .
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     # Not /health: that returns 503 whenever the pipeline is stale, and Render would
     # then treat the web app itself as broken (failed deploys, restarts).

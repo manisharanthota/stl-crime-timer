@@ -59,6 +59,8 @@ def test_render_blueprint():
     assert svc["type"] == "web" and svc["plan"] == "free"
     assert re.search(r"uvicorn api\.main:app .*--port \$PORT", svc["startCommand"])
     assert "--host 0.0.0.0" in svc["startCommand"]
+    assert "python -m pip install ." in svc["buildCommand"]
+    assert "poetry" not in svc["buildCommand"].lower()
     assert svc["healthCheckPath"] != "/health"  # /health is 503 when the pipeline is stale
     for var in svc["envVars"]:
         assert var == {"key": var["key"], "sync": False}  # values only in the dashboard
@@ -67,3 +69,11 @@ def test_render_blueprint():
 
 def test_python_version_pinned_once():
     assert (ROOT / ".python-version").read_text().strip() == "3.13"
+
+
+def test_no_poetry_config():
+    """Render switches to Poetry when it finds Poetry config; keep the repo pip-only."""
+    assert not (ROOT / "poetry.lock").exists()
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[tool.poetry" not in pyproject
+    assert 'build-backend = "setuptools.build_meta"' in pyproject
