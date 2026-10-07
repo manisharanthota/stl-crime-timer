@@ -14,9 +14,9 @@ GitHub Actions (every 10 min)          Render (web service, free)
 ```
 
 - **Supabase** hosts the Postgres database (free tier).
-- **GitHub Actions** runs the pipeline (fetch → classify → match) every 10 minutes. It
-  also applies database migrations before every run. Optionally, **cron-job.org**
-  triggers it on time through GitHub's API (step 3d); GitHub's own schedule is often late.
+- **GitHub Actions** runs the pipeline (fetch → classify → match). It also applies
+  database migrations before every run. **cron-job.org** starts it every 10 minutes
+  through GitHub's API (step 3d); the workflow has no GitHub schedule of its own.
 - **Render** runs the website and API.
 - **UptimeRobot** checks `/health` every 5 minutes. `/health` answers **503** when no
   pipeline run has succeeded in 30 minutes, so you get an email if GitHub Actions stops.
@@ -152,27 +152,25 @@ git push origin master
 2. You'll see two workflows:
    - **Tests** runs `pytest` on every push (SQLite plus a throwaway Postgres). It never
      touches your real database or Gemini.
-   - **Pipeline** runs every 10 minutes.
+   - **Pipeline** runs when cron-job.org starts it (step 3d) or when you start it by hand.
 3. Click **Pipeline** → **Run workflow** → **Run workflow** to start one now.
 4. Click the run, then the **run** job, to watch the logs. A good run ends with a line
    like `Pipeline run 42 finished: success`. In Supabase's Table Editor,
    `pipeline_runs` gets a new row.
 
 Good to know:
-- GitHub starts scheduled runs **late** (often 5–15 minutes, sometimes skips one when
-  busy). That's expected; the 30-minute health window allows for it.
+- Nothing runs on a timer until you set up cron-job.org (step 3d). The workflow used to
+  have a GitHub schedule too, but GitHub started those runs late (often 5–15 minutes)
+  and they doubled up with cron-job.org's, so it was removed.
 - Runs never overlap: a run that's due while another is still going waits for it.
-- **On a public repo, GitHub turns off scheduled workflows after 60 days with no commits.**
-  You'll get an email from GitHub, and UptimeRobot will alert. Re-enable it under
-  Actions → Pipeline → **Enable workflow**, or push any commit now and then.
 - The free Gemini quota (about 20 requests/day per model) is shared by all runs; the
   classifier only calls Gemini when there are new crime-looking headlines, and it
   switches to the fallback model or stops cleanly when the quota is used up.
 
-### 3d. Optional: on-time runs from cron-job.org
+### 3d. Every-10-minute runs from cron-job.org
 
-GitHub's own schedule is often late or skips runs (see above). cron-job.org (free) can
-start the Pipeline workflow on time instead, through GitHub's `workflow_dispatch` API.
+The Pipeline workflow has no schedule of its own. cron-job.org (free) starts it every
+10 minutes through GitHub's `workflow_dispatch` API.
 That's the same thing as clicking **Run workflow**. It needs a GitHub token, which you
 make **only able to run Actions on this one repo**.
 
@@ -235,11 +233,9 @@ PowerShell window afterwards so the token isn't left in it.
 4. **Create**, then open the job and use **Test run**. It should answer **204**, and a
    Pipeline run shows up in the Actions tab.
 
-**Should the GitHub schedule stay on?** Yes, as a backup: if cron-job.org stops, the
-GitHub schedule keeps the pipeline going. Two triggers don't double the work. Runs
-never overlap (a run that's due while another is going waits, and GitHub keeps at most
-one waiting). An extra run only fetches feeds; only new crime-looking headlines reach
-the LLM.
+**If cron-job.org stops** (job disabled after repeated failures, token expired), no
+runs start. `/health` turns 503 after 30 minutes and UptimeRobot alerts you; check the
+job's history on cron-job.org, and start a run by hand from the Actions tab meanwhile.
 
 **Renewing the token**: before it expires, open the token on GitHub → **Regenerate
 token** (same permissions), then paste the new value into the job's `Authorization`
@@ -367,7 +363,7 @@ redacted from log lines.
 | Render build log runs `poetry install` and fails | The service was made with New → Web Service, so `render.yaml` is ignored. Set the Build Command to `python -m pip install --upgrade pip && python -m pip install .` in the service's Settings (see the pip note in step 4). No `POETRY_VERSION` needed. |
 | Render build: `No matching distribution` / wrong Python | Render reads `.python-version` (3.13). Remove any `PYTHON_VERSION` env var you added in the dashboard, or set it to a full version like `3.13.5`. |
 | Pipeline log: `DATABASE_URL secret is not set` | Add the secret (name must match exactly) and re-run. |
-| Pipeline never runs on schedule | Workflows must be on `master` (the default branch); check Actions isn't disabled. |
+| Pipeline never runs on its own | cron-job.org starts it (step 3d): check the job is enabled and its last responses are **204**. The workflow must be on `master` (the default branch), and Actions must not be disabled. |
 | cron-job.org: **401** | Token wrong, expired or revoked, or `Bearer ` missing in front of it. Regenerate it (step 3d). |
 | cron-job.org: **403** "Resource not accessible by personal access token" | The token lacks **Actions: Read and write**, or `stl-crime-timer` isn't among its selected repositories. |
 | cron-job.org: **404** | Typo in the URL (owner, repo, or `pipeline.yml`), or the token can't see the repo. GitHub answers 404 instead of 403 for repos a token can't access. |

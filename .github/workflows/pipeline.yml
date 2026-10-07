@@ -1,11 +1,11 @@
-# Scheduled fetch -> classify -> match run against the production database.
-# GitHub may start scheduled runs late (or skip one under load); /health turns 503 after
-# 30 minutes without a successful run, so an uptime monitor catches a stopped schedule.
+# Fetch -> classify -> match run against the production database. Started every 10
+# minutes by cron-job.org through the workflow_dispatch API (docs/deploy.md step 3d), or
+# by hand. There is no GitHub schedule: it ran late and doubled up with cron-job.org.
+# /health turns 503 after 30 minutes without a successful run, so an uptime monitor
+# catches cron-job.org stopping.
 name: Pipeline
 
 on:
-  schedule:
-    - cron: "*/10 * * * *"  # every 10 minutes (UTC)
   workflow_dispatch: {}
 
 # One run at a time. A run that starts while another is going waits for it instead of

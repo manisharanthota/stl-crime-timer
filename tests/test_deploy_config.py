@@ -22,8 +22,8 @@ def steps_run(job: dict) -> list[str]:
 
 def test_pipeline_workflow():
     wf = load(".github/workflows/pipeline.yml")
-    assert wf["on"]["schedule"] == [{"cron": "*/10 * * * *"}]
-    assert "workflow_dispatch" in wf["on"]
+    # Only cron-job.org (workflow_dispatch) starts runs; no GitHub schedule.
+    assert wf["on"] == {"workflow_dispatch": {}}
     assert wf["concurrency"] == {"group": "pipeline", "cancel-in-progress": False}
 
     job = wf["jobs"]["run"]
