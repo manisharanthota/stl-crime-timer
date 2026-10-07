@@ -70,6 +70,7 @@ STRIPPED = {
     "ALERT_ON_NEW_INCIDENT": ("1", "alert_on_new_incident", True),
     "ALERT_COOLDOWN_HOURS": ("3", "alert_cooldown_hours", 3.0),
     "LOG_TO_FILE": ("false", "log_to_file", False),
+    "MAX_ITEM_AGE_DAYS": ("3", "max_item_age_days", 3.0),
 }
 
 

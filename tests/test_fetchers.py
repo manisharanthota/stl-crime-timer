@@ -8,7 +8,9 @@ from sqlalchemy import select
 
 import fetchers.__main__ as cli
 from fetchers.base import REQUEST_TIMEOUT, USER_AGENT
-from fetchers.runner import make_client, normalize_url, run_fetchers
+from config import get_settings
+from fetchers.base import FetchedItem
+from fetchers.runner import drop_stale, make_client, normalize_url, run_fetchers
 from models import RawItem, Source, hash_url
 
 FEEDS = Path(__file__).parent / "fixtures" / "feeds"
@@ -17,6 +19,9 @@ GOOD_URL = "https://good.example/feed"
 BAD_URL = "https://bad.example/feed"
 SLOW_URL = "https://slow.example/feed"
 DUP_URL = "https://dup.example/feed"
+
+# Shortly after the fixture feeds' items (Oct 1 2026), so none are stale.
+NOW = datetime(2026, 10, 2, tzinfo=timezone.utc)
 
 
 def feed_bytes(name: str) -> bytes:
@@ -71,7 +76,7 @@ def test_normalize_url(url, expected):
 def test_good_feed_inserts_new_items(session, client):
     source = add_source(session, GOOD_URL, fail_count=3)
 
-    assert run_fetchers(session, client) == {GOOD_URL: 3}
+    assert run_fetchers(session, client, now=NOW) == {GOOD_URL: 3}
 
     items = raw_items(session)
     assert [i.title for i in items] == [
@@ -102,7 +107,7 @@ def test_malformed_feed_counts_as_failure(session, client, caplog):
     source = add_source(session, BAD_URL)
 
     with caplog.at_level(logging.ERROR):
-        assert run_fetchers(session, client) == {}
+        assert run_fetchers(session, client, now=NOW) == {}
 
     assert raw_items(session) == []
     session.refresh(source)
@@ -115,7 +120,7 @@ def test_timeout_counts_as_failure_and_is_logged(session, client, caplog):
     source = add_source(session, SLOW_URL, fail_count=2)
 
     with caplog.at_level(logging.ERROR):
-        assert run_fetchers(session, client) == {}
+        assert run_fetchers(session, client, now=NOW) == {}
 
     session.refresh(source)
     assert source.fail_count == 3
@@ -130,12 +135,12 @@ def test_duplicates_are_skipped(session, client):
 
     # duplicate.xml repeats a good.xml story (different query string) and lists
     # one new story twice (trailing slash vs query string).
-    assert run_fetchers(session, client) == {GOOD_URL: 3, DUP_URL: 1}
+    assert run_fetchers(session, client, now=NOW) == {GOOD_URL: 3, DUP_URL: 1}
     assert len(raw_items(session)) == 4
     assert [i.title for i in raw_items(session)][-1] == "Homicide in Dutchtown"
 
     # Second run: everything already stored.
-    assert run_fetchers(session, client) == {GOOD_URL: 0, DUP_URL: 0}
+    assert run_fetchers(session, client, now=NOW) == {GOOD_URL: 0, DUP_URL: 0}
     assert len(raw_items(session)) == 4
 
 
@@ -143,7 +148,7 @@ def test_failing_source_does_not_stop_others(session, client):
     bad = add_source(session, SLOW_URL)
     good = add_source(session, GOOD_URL)
 
-    assert run_fetchers(session, client) == {GOOD_URL: 3}
+    assert run_fetchers(session, client, now=NOW) == {GOOD_URL: 3}
 
     session.refresh(bad)
     session.refresh(good)
@@ -157,9 +162,61 @@ def test_inactive_sources_are_skipped(session, client):
     add_source(session, "https://inactive.example/feed", active=False)
 
     # The handler raises on unknown URLs, so any request would fail the source.
-    assert run_fetchers(session, client) == {}
+    assert run_fetchers(session, client, now=NOW) == {}
     source = session.scalars(select(Source)).one()
     assert source.fail_count == 0
+
+
+def test_items_older_than_max_age_are_skipped(session, client):
+    add_source(session, GOOD_URL)
+
+    # Cutoff Oct 1 10:00 UTC: the 03:15 story is dropped, the 17:00 one and the
+    # undated one are kept.
+    now = datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc)
+    assert run_fetchers(session, client, now=now, max_age_days=7) == {GOOD_URL: 2}
+    assert [i.title for i in raw_items(session)] == [
+        "Burglary reported in Soulard",
+        "City council passes budget",
+    ]
+
+
+def test_stale_feed_still_counts_as_success(session, client):
+    source = add_source(session, GOOD_URL, fail_count=2)
+
+    now = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    assert run_fetchers(session, client, now=now, max_age_days=7) == {GOOD_URL: 1}
+    assert [i.published_at for i in raw_items(session)] == [None]
+    session.refresh(source)
+    assert source.fail_count == 0
+
+
+def test_max_age_zero_means_no_limit(session, client):
+    add_source(session, GOOD_URL)
+
+    now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    assert run_fetchers(session, client, now=now, max_age_days=0) == {GOOD_URL: 3}
+
+
+def test_max_age_defaults_to_setting(session, client, monkeypatch):
+    monkeypatch.setattr("config.load_dotenv", lambda: None)
+    monkeypatch.setenv("MAX_ITEM_AGE_DAYS", "1")
+    get_settings.cache_clear()
+    try:
+        add_source(session, GOOD_URL)
+        # Cutoff Oct 1 12:00 UTC drops only the 03:15 story.
+        now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+        assert run_fetchers(session, client, now=now) == {GOOD_URL: 2}
+    finally:
+        get_settings.cache_clear()
+
+
+def test_drop_stale_reads_naive_times_as_st_louis():
+    # 2026-10-01 00:30 CDT = 05:30 UTC, after a 05:00 UTC cutoff.
+    item = FetchedItem(url="https://a.example/x", title="x",
+                       published_at=datetime(2026, 10, 1, 0, 30))
+    assert drop_stale([item], datetime(2026, 10, 1, 5, 0, tzinfo=timezone.utc)) == [item]
+    assert drop_stale([item], datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)) == []
+    assert drop_stale([item], None) == [item]
 
 
 def test_default_client_has_timeout_and_user_agent():

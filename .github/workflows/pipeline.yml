@@ -38,6 +38,7 @@ jobs:
       ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
       ALERT_ON_NEW_INCIDENT: ${{ secrets.ALERT_ON_NEW_INCIDENT }}
       ALERT_COOLDOWN_HOURS: ${{ secrets.ALERT_COOLDOWN_HOURS }}
+      MAX_ITEM_AGE_DAYS: ${{ secrets.MAX_ITEM_AGE_DAYS }}
       LOG_TO_FILE: "false"  # the runner is thrown away; logs go to the Actions log
     steps:
       - uses: actions/checkout@v4
