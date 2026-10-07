@@ -37,3 +37,11 @@ def test_real_sources_yaml_parses():
     assert sources
     for entry in sources:
         assert {"name", "url", "type"} <= entry.keys()
+
+
+def test_every_source_type_has_a_fetcher():
+    from fetchers.runner import FETCHERS
+
+    sources = load_sources()
+    assert {e["type"] for e in sources} <= FETCHERS.keys()
+    assert {"name": "SLMPD", "url": "https://slmpd.org/feed/", "type": "police"} in sources

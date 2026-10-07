@@ -8,6 +8,15 @@ Don't reset a timer. Store incidents and compute `now - max(occurred_at)` of con
 ## Pipeline
 Scheduler (every 10 min) → Fetchers (RSS / RSS.app for FB) → raw_items (dedup by url_hash) → keyword prefilter → LLM classifier (JSON) → incident matcher → incidents → API /timer → web page
 
+## Sources
+All RSS, listed in `sources.yaml` (loaded by `seed.py`); items older than 7 days are skipped (`MAX_ITEM_AGE_DAYS`).
+- KSDK 5 (news)
+- Fox2 (news)
+- KMOV 4 (news)
+- St. Louis Post-Dispatch, crime & courts section (news)
+- St. Louis Public Radio (news)
+- SLMPD, St. Louis Metropolitan Police Department news releases (police)
+
 ## Stack
 Python, FastAPI, SQLAlchemy, Alembic, SQLite (Postgres later), Claude API, APScheduler
 

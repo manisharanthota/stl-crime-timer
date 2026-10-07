@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Source.type -> fetcher class. Unknown types fall back to RSS.
 FETCHERS: dict[str, type[BaseFetcher]] = {
     "news": RSSFetcher,
+    "police": RSSFetcher,
     "facebook": RSSFetcher,
 }
 

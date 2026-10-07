@@ -351,7 +351,8 @@ def test_page_loads(client):
     assert r.headers["content-type"].startswith("text/html")
     html = r.text
     assert "without a shooting, burglary, or killing" in html
-    assert "Based on local news reports. Not official police data." in html
+    assert "Based on local news reports and St. Louis police (SLMPD) news releases." in html
+    assert "Sources: KSDK 5, Fox2, KMOV 4, St. Louis Post-Dispatch, St. Louis Public Radio, SLMPD." in html
     assert "America/Chicago" in html
     for path in ("/timer", "/stats", "/incidents", "/health"):
         assert path in html

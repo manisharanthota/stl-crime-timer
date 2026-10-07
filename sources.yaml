@@ -14,3 +14,6 @@ sources:
   - name: St. Louis Public Radio
     url: https://www.stlpr.org/news.rss
     type: news
+  - name: SLMPD
+    url: https://slmpd.org/feed/
+    type: police
