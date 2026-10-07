@@ -3,6 +3,7 @@
 # expected.was_shooting is labeled on the crime cases only; unlabeled cases are not scored on it.
 # expected.creates_incident (is_crime and in_stl and not is_followup) and
 # expected.occurred_at_null are derived from the prediction, scored only where labeled.
+# expected.occurred_window: [earliest, latest] accepted occurred_at, scored only where labeled.
 - title: "Man shot and wounded in north St. Louis' Walnut Park neighborhood"
   body: "A 34-year-old man was shot in the leg Sunday night in the 5600 block of Riverview Boulevard, St. Louis police said. He was taken to a hospital in stable condition."
   published_at: "2026-09-28T07:15:00-05:00"
@@ -130,3 +131,10 @@
   body: "ST. LOUIS - Police detained a person of interest early Tuesday in connection with a string of burglaries in St. Louis. According to St. Louis Metropolitan Police Department spokesperson Mitch McCoy, an officer spotted and detained a person of interest overnight in Soulard near 9th St. and Allen Avenue. Detectives are continuing their investigation."
   published_at: "2026-10-06T06:13:42-05:00"
   expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false, is_followup: true, creates_incident: false, occurred_at_null: true}
+
+# A string of crimes (prompt v7): occurred_at is the latest one's time (early Sunday,
+# 1-4 a.m.), never the publish day. Live incident #4 got Oct 5 00:00 under v5.
+- title: "'Lock your doors and windows': Police warn residents after string of overnight burglaries across St. Louis"
+  body: "St. Louis police are asking residents to stay vigilant after a string of burglaries across four city neighborhoods. They believe the same suspect may be responsible. The four overnight break-ins happened between Wednesday and Sunday, each between 1 and 4 a.m., in Soulard, Compton Heights, Shaw and Skinker-DeBaliviere."
+  published_at: "2026-10-05T18:34:46-05:00"
+  expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false, is_followup: false, creates_incident: true, occurred_window: ["2026-10-04T00:00:00-05:00", "2026-10-04T05:00:00-05:00"]}

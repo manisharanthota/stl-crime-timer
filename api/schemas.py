@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Annotated
 
-from pydantic import BaseModel, PlainSerializer
+from pydantic import BaseModel, ConfigDict, PlainSerializer
 
 
 def _iso_z(value: datetime) -> str:
@@ -83,3 +83,15 @@ class StatsResponse(BaseModel):
     now: UTC
     overall: GapEntry
     by_type: list[GapEntry]
+
+
+class IncidentPatch(BaseModel):
+    """Body of PATCH /admin/incidents/{id}: only the fields sent are changed (null
+    clears location/neighborhood). A naive occurred_at is St. Louis time."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    occurred_at: datetime | None = None
+    time_estimated: bool | None = None
+    location: str | None = None
+    neighborhood: str | None = None

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -204,7 +204,7 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == PROMPT_VERSION == "v6"
+    assert c.prompt_version == PROMPT_VERSION == "v7"
     assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
@@ -827,12 +827,19 @@ def test_prompt_explains_time_precision():
 
 
 def test_prompt_v6_arrests_are_followups_with_crime_time():
-    assert PROMPT_VERSION == "v6"
     text = " ".join(SYSTEM_PROMPT.split())
     assert "arrest, a detention" in text and '"person of interest"' in text
     assert "is always a follow-up (is_followup=true)" in text
     assert "never when the arrest, detention, or identification happened" in text
     assert "doesn't say when the crime itself happened, occurred_at is null" in text
+
+
+def test_prompt_v7_string_of_crimes_and_publish_cap():
+    assert PROMPT_VERSION == "v7"
+    text = " ".join(SYSTEM_PROMPT.split())
+    assert "For a string or series of crimes" in text
+    assert "occurred_at is the time of the latest one" in text
+    assert "occurred_at is never later than the item's published_at" in text
 
 
 def test_batch_result_requires_raw_item_id():
@@ -1054,19 +1061,24 @@ def eval_env(monkeypatch, tmp_path):
     return SimpleNamespace(cases=cases, cache=cache, make=make, settings=llms_settings)
 
 
-def test_eval_fixture_has_25_labeled_cases():
+def test_eval_fixture_has_26_labeled_cases():
     cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
-    assert len(cases) == 25
+    assert len(cases) == 26
     for case in cases:
         expected = case["expected"]
-        optional = {"was_shooting", "is_followup", "creates_incident", "occurred_at_null"}
+        optional = {
+            "was_shooting", "is_followup", "creates_incident", "occurred_at_null",
+            "occurred_window",
+        }
         assert set(expected) - optional == {"is_crime", "crime_type", "in_stl"}
         # was_shooting is labeled on exactly the crime cases.
         assert ("was_shooting" in expected) == expected["is_crime"]
     followups = [c["expected"] for c in cases if "is_followup" in c["expected"]]
-    # 2 recent follow-ups (crimes), 2 about older crimes (not crimes), 1 detention.
+    # 2 recent follow-ups (crimes), 2 about older crimes (not crimes), 1 detention,
+    # 1 first report of a string of burglaries.
     assert [(e["is_crime"], e["is_followup"]) for e in followups] == [
         (True, True), (True, True), (False, False), (False, False), (True, True),
+        (True, False),
     ]
 
 
@@ -1077,6 +1089,35 @@ def test_eval_fixture_has_detention_followup():
         "is_crime": True, "crime_type": "burglary", "in_stl": True, "was_shooting": False,
         "is_followup": True, "creates_incident": False, "occurred_at_null": True,
     }
+
+
+def test_eval_fixture_has_string_of_burglaries():
+    cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
+    [case] = [c for c in cases if "string of overnight burglaries" in c["title"]]
+    expected = case["expected"]
+    assert expected["creates_incident"] is True
+    start, end = (datetime.fromisoformat(w) for w in expected["occurred_window"])
+    published = datetime.fromisoformat(case["published_at"])
+    # Early Sunday Oct 4, never the publish day.
+    assert start.date() == end.date() == date(2026, 10, 4)
+    assert end < published
+
+
+@pytest.mark.parametrize(
+    "occurred_at, ok",
+    [
+        ("2026-10-04T04:00:00-05:00", True),
+        ("2026-10-04T09:00:00Z", True),  # 04:00 CDT, as UTC
+        ("2026-10-05T00:00:00-05:00", False),  # the v5 answer
+        (None, False),
+    ],
+)
+def test_eval_scores_occurred_window(occurred_at, ok):
+    pred = ClassifierOutput.model_validate(
+        {**VALID, "crime_type": "burglary", "was_shooting": False, "occurred_at": occurred_at}
+    )
+    window = ["2026-10-04T00:00:00-05:00", "2026-10-04T05:00:00-05:00"]
+    assert eval_script.score(pred, "occurred_window", window)[0] is ok
 
 
 def test_eval_batches_and_scores(eval_env, capsys):

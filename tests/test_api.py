@@ -293,6 +293,7 @@ ADMIN_CALLS = [
     ("post", "/admin/incidents/1/confirm"),
     ("post", "/admin/incidents/1/reject"),
     ("post", "/admin/incidents/1/merge?into=2"),
+    ("patch", "/admin/incidents/1"),
 ]
 
 
@@ -490,3 +491,119 @@ def test_merge_requires_into(client, add):
     a = add("shooting")
     r = client.post(f"/admin/incidents/{a}/merge", headers=AUTH)
     assert r.status_code == 422
+
+
+# --- admin edit ---
+
+
+def edit(client, incident_id, body):
+    return client.patch(f"/admin/incidents/{incident_id}", json=body, headers=AUTH)
+
+
+def test_edit_time_marks_it_manual(client, add, session_factory):
+    inc = add("burglary", hours_ago=12, time_estimated=True, articles=1)
+
+    # Naive = St. Louis time: Sunday Oct 4, 04:00 CDT.
+    r = edit(client, inc, {"occurred_at": "2026-10-04T04:00:00", "time_estimated": True})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-04T09:00:00Z", True)
+    assert len(body["articles"]) == 1
+    with session_factory() as s:
+        i = s.get(Incident, inc)
+        assert (i.manual_occurred_at, i.manual_location, i.manual_neighborhood) == (
+            True, False, False,
+        )
+
+
+def test_edit_time_with_offset_and_only_time_estimated(client, add, session_factory):
+    inc = add("shooting", hours_ago=3, time_estimated=True)
+    body = edit(client, inc, {"occurred_at": "2026-10-05T01:30:00-05:00"}).json()
+    assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-05T06:30:00Z", True)
+
+    other = add("shooting", hours_ago=5, time_estimated=True)
+    body = edit(client, other, {"time_estimated": False}).json()
+    assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-05T07:00:00Z", False)
+    with session_factory() as s:
+        assert s.get(Incident, other).manual_occurred_at is True
+
+
+def test_edit_location_and_neighborhood(client, add, session_factory):
+    inc = add("burglary", location="somewhere", neighborhood=None)
+
+    body = edit(client, inc, {"location": "  9th St. and Allen Ave  ",
+                              "neighborhood": "skinker-debaliviere"}).json()
+    assert (body["location"], body["neighborhood"]) == (
+        "9th St. and Allen Ave", "Skinker DeBaliviere",
+    )
+    body = edit(client, inc, {"location": None, "neighborhood": None}).json()
+    assert (body["location"], body["neighborhood"]) == (None, None)
+    with session_factory() as s:
+        i = s.get(Incident, inc)
+        assert (i.manual_occurred_at, i.manual_location, i.manual_neighborhood) == (
+            False, True, True,
+        )
+
+
+def test_edit_moves_timer(client, add):
+    older = add("burglary", hours_ago=30)
+    newer = add("burglary", hours_ago=2)
+    assert client.get("/timer").json()["overall"]["last"]["incident_id"] == newer
+
+    edit(client, newer, {"occurred_at": "2026-10-03T12:00:00Z"})
+
+    assert client.get("/timer").json()["overall"]["last"]["incident_id"] == older
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"occurred_at": None},
+        {"occurred_at": "not a date"},
+        {"time_estimated": None},
+        {"neighborhood": "Atlantis"},
+        {"status": "confirmed"},
+    ],
+)
+def test_edit_rejects_bad_bodies(client, add, session_factory, body):
+    inc = add("shooting", hours_ago=1, neighborhood="Shaw")
+    r = edit(client, inc, body)
+    assert r.status_code == 422
+    with session_factory() as s:
+        i = s.get(Incident, inc)
+        assert (i.neighborhood, i.status, i.manual_occurred_at) == ("Shaw", "confirmed", False)
+
+
+def test_edit_missing_or_merged_incident(client, add, session_factory):
+    assert edit(client, 999, {"location": "x"}).status_code == 404
+    a = add("shooting", hours_ago=1)
+    b = add("shooting", hours_ago=2)
+    merge(client, a, b)
+    r = edit(client, a, {"location": "x"})
+    assert r.status_code == 409
+    assert f"merged into {b}" in r.json()["detail"]
+
+
+def test_merge_keeps_manual_fields(client, add, session_factory):
+    target = add("shooting", hours_ago=10, location=None)
+    source = add("shooting", hours_ago=20, location="Grand Blvd")
+    edit(client, target, {"occurred_at": "2026-10-05T03:00:00Z", "location": None})
+
+    body = merge(client, source, target).json()
+
+    # The source's earlier reported time and its location don't override the edits.
+    assert (body["occurred_at"], body["location"]) == ("2026-10-05T03:00:00Z", None)
+
+
+def test_merge_carries_manual_time_from_source(client, add, session_factory):
+    target = add("shooting", hours_ago=10)
+    source = add("shooting", hours_ago=20, time_estimated=True)
+    edit(client, source, {"occurred_at": "2026-10-05T05:00:00Z"})
+
+    body = merge(client, source, target).json()
+
+    assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-05T05:00:00Z", True)
+    with session_factory() as s:
+        assert s.get(Incident, target).manual_occurred_at is True

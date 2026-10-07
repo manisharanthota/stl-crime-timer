@@ -22,7 +22,9 @@ def merge_incidents(session: Session, source_id: int, target_id: int) -> Inciden
     The target keeps the earliest reported time (or the earliest estimated one if
     neither has a reported time), ORs was_shooting, becomes a homicide if a shooting
     and a homicide merge, is confirmed if either was (never downgraded), and fills an
-    empty location/neighborhood from the source. Commits and returns the target.
+    empty location/neighborhood from the source. A field an admin set by hand wins:
+    the target's, else the source's (which then stays manual on the target).
+    Commits and returns the target.
     """
     if source_id == target_id:
         raise MergeError("Can't merge an incident into itself", 400)
@@ -55,18 +57,25 @@ def merge_incidents(session: Session, source_id: int, target_id: int) -> Inciden
 
     if {source.crime_type, target.crime_type} == {"shooting", "homicide"}:
         target.crime_type = "homicide"
-    # Reported times beat estimated ones; within the same kind, the earliest wins.
-    target.occurred_at, target.time_estimated = min(
-        (to_utc(i.occurred_at), i.time_estimated) for i in (source, target)
-        if i.time_estimated == min(source.time_estimated, target.time_estimated)
-    )
+    if target.manual_occurred_at:
+        pass
+    elif source.manual_occurred_at:
+        target.occurred_at, target.time_estimated = source.occurred_at, source.time_estimated
+        target.manual_occurred_at = True
+    else:
+        # Reported times beat estimated ones; within the same kind, the earliest wins.
+        target.occurred_at, target.time_estimated = min(
+            (to_utc(i.occurred_at), i.time_estimated) for i in (source, target)
+            if i.time_estimated == min(source.time_estimated, target.time_estimated)
+        )
     target.was_shooting = target.was_shooting or source.was_shooting
     if "confirmed" in (source.status, target.status):
         target.status = "confirmed"
-    if target.location is None:
-        target.location = source.location
-    if target.neighborhood is None:
+    if target.location is None and not target.manual_location:
+        target.location, target.manual_location = source.location, source.manual_location
+    if target.neighborhood is None and not target.manual_neighborhood:
         target.neighborhood = source.neighborhood
+        target.manual_neighborhood = source.manual_neighborhood
 
     source.status = "merged"
     source.merged_into_id = target.id

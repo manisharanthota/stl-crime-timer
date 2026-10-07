@@ -36,9 +36,11 @@ DEFAULT_PATH = ROOT / "tests" / "fixtures" / "eval_headlines.yaml"
 DEFAULT_CACHE = ROOT / ".eval_cache.json"
 # Every field but the first three is only scored on cases that label it.
 # creates_incident and occurred_at_null are derived from the prediction (see predicted).
+# occurred_window is labeled [earliest, latest] (ISO 8601) and passes when occurred_at
+# falls inside it.
 FIELDS = (
     "is_crime", "crime_type", "in_stl", "was_shooting", "is_followup",
-    "creates_incident", "occurred_at_null",
+    "creates_incident", "occurred_at_null", "occurred_window",
 )
 
 
@@ -49,6 +51,17 @@ def predicted(pred: ClassifierOutput, field: str):
     if field == "occurred_at_null":
         return pred.occurred_at is None
     return getattr(pred, field)
+
+
+def score(pred: ClassifierOutput, field: str, want) -> tuple[bool, object]:
+    """(whether the prediction matches the label, the predicted value to report)."""
+    if field == "occurred_window":
+        got = pred.occurred_at
+        start, end = (to_utc(datetime.fromisoformat(w)) for w in want)
+        ok = got is not None and start <= to_utc(got) <= end
+        return ok, to_local(got).isoformat() if got else None
+    got = predicted(pred, field)
+    return got == want, got
 
 
 def load_cases(path: Path) -> list[dict]:
@@ -195,8 +208,8 @@ def main(argv: list[str] | None = None) -> None:
             if f not in expected or (f == "in_stl" and want is None):
                 continue
             field_total[f] += 1
-            got = predicted(pred, f)
-            if got == want:
+            ok, got = score(pred, f, want)
+            if ok:
                 field_hits[f] += 1
             else:
                 misses.append(f"{f}: want {want}, got {got}")

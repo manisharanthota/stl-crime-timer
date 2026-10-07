@@ -40,7 +40,10 @@ def test_upgrade_head_creates_schema(tmp_path, monkeypatch):
     assert "ix_pipeline_runs_started_at" in {
         i["name"] for i in insp.get_indexes("pipeline_runs")
     }
-    assert {"time_estimated", "was_shooting"} <= {c["name"] for c in insp.get_columns("incidents")}
+    assert {
+        "time_estimated", "was_shooting",
+        "manual_occurred_at", "manual_location", "manual_neighborhood",
+    } <= {c["name"] for c in insp.get_columns("incidents")}
     assert "was_shooting" in {c["name"] for c in insp.get_columns("classifications")}
     engine.dispose()
 
@@ -303,3 +306,37 @@ def test_fresh_migration_enforces_check_constraints(tmp_path, monkeypatch):
                 "VALUES ('shooting', '2026-10-04', 'bogus')"
             ))
     engine.dispose()
+
+
+def test_manual_fields_upgrade_and_downgrade(tmp_path, monkeypatch):
+    cfg, db_url = _alembic(tmp_path, monkeypatch)
+    manual = {"manual_occurred_at", "manual_location", "manual_neighborhood"}
+    try:
+        command.upgrade(cfg, "d5f1a8c3e902")  # before the manual fields
+        engine = create_engine(db_url)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO incidents (id, crime_type, occurred_at)"
+                " VALUES (1, 'burglary', '2026-10-05 05:00:00')"
+            ))
+        engine.dispose()
+
+        command.upgrade(cfg, "head")
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT manual_occurred_at, manual_location, manual_neighborhood"
+                " FROM incidents WHERE id = 1"
+            )).one()
+        engine.dispose()
+        assert tuple(row) == (0, 0, 0)  # existing incidents start unlocked
+
+        command.downgrade(cfg, "d5f1a8c3e902")
+        engine = create_engine(db_url)
+        columns = {c["name"] for c in inspect(engine).get_columns("incidents")}
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM incidents")).scalar() == 1
+        engine.dispose()
+        assert not manual & columns
+    finally:
+        get_settings.cache_clear()

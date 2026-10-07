@@ -6,7 +6,7 @@ from matcher.neighborhoods import NEIGHBORHOODS
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v6"
+PROMPT_VERSION = "v7"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -42,6 +42,10 @@ Fields of each result:
   never when the arrest, detention, or identification happened and never when the
   story was published. If a follow-up doesn't say when the crime itself happened,
   occurred_at is null. Never default to the publish date. null if unknown.
+  For a string or series of crimes reported together (e.g. "four burglaries
+  Wednesday through Sunday"), occurred_at is the time of the latest one.
+  occurred_at is never later than the item's published_at: a crime can't happen
+  after the story about it was published.
 - time_precision: how much of occurred_at the item states.
   "exact": it gives a clock time ("12:40 a.m.", "around 9:30 p.m.").
   "date_only": it gives only the day, or a part of the day ("Friday",

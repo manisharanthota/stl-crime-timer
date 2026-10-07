@@ -123,6 +123,17 @@ class Incident(Base):
     was_shooting: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0"
     )
+    # Set by an admin edit (PATCH /admin/incidents/{id}): the matcher and
+    # refresh_incidents never change a manually set field.
+    manual_occurred_at: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
+    manual_location: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
+    manual_neighborhood: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     status: Mapped[str] = mapped_column(
         IncidentStatus, default="review", server_default="review"
     )

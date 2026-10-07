@@ -44,7 +44,8 @@ def add(session):
             url=url,
             url_hash=hash_url(url),
             title=f"story {n}",
-            published_at=published_at or T0 + timedelta(hours=1),
+            # Published an hour after the crime unless a test says otherwise.
+            published_at=published_at or (occurred_at or T0) + timedelta(hours=1),
             status="classified",
         )
         session.add(item)
@@ -555,7 +556,7 @@ def test_first_report_still_creates_incident(session, add):
 # --- refresh from re-classified linked items ---------------------------------
 
 def test_refresh_takes_reported_time_from_reclassified_item(session, add):
-    item = add(occurred_at=None, published_at=T0 + timedelta(hours=10))
+    item = add(occurred_at=T0, time_precision="date_only", published_at=T0 + timedelta(hours=20))
     match_pending(session, threshold=85)
     assert incidents(session)[0].time_estimated is True
 
@@ -692,3 +693,88 @@ def test_merged_incident_is_not_a_match_candidate(session, add):
 
     assert counts["created"] == 1
     assert len(merged.raw_items) == 1
+
+
+# --- publish-time cap ----------------------------------------------------------
+
+def test_occurred_after_publish_is_capped_and_estimated(session, add):
+    # The KSDK burglary string: model said Oct 5 00:00 for a story published earlier
+    # than a later guess would allow.
+    published = T0 + timedelta(hours=1)
+    add(occurred_at=T0 + timedelta(hours=5), published_at=published)
+    match_pending(session, threshold=85)
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (published, True)
+
+
+def test_capped_time_never_counts_as_reported_on_refresh(session, add):
+    item = add(occurred_at=T0, time_precision="date_only", published_at=T0 + timedelta(hours=3))
+    match_pending(session, threshold=85)
+
+    reclassify(session, item, occurred_at=T0 + timedelta(hours=8))  # "exact", after publish
+    assert match_pending(session, threshold=85)["refreshed"] == 0
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (T0, True)
+
+
+# --- manual (admin-edited) fields ---------------------------------------------
+
+def _make_manual(session, **fields):
+    [inc] = incidents(session)
+    for name, value in fields.items():
+        setattr(inc, name, value)
+    session.commit()
+    return inc
+
+
+def test_refresh_never_overwrites_manual_time(session, add):
+    item = add(occurred_at=T0, time_precision="date_only")
+    match_pending(session, threshold=85)
+    manual = T0 - timedelta(hours=20)
+    _make_manual(session, occurred_at=manual, time_estimated=True, manual_occurred_at=True)
+
+    reclassify(session, item, occurred_at=T0 - timedelta(minutes=30))  # exact
+    assert match_pending(session, threshold=85)["refreshed"] == 0
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (manual, True)
+
+
+def test_merge_never_moves_manual_time(session, add):
+    add(occurred_at=T0, time_precision="date_only")
+    match_pending(session, threshold=85)
+    manual = T0 + timedelta(hours=2)
+    _make_manual(session, occurred_at=manual, time_estimated=True, manual_occurred_at=True)
+
+    add(occurred_at=T0 + timedelta(hours=1))  # exact, earlier: would normally win
+    counts = match_pending(session, threshold=85)
+    assert counts["merged"] == 1
+    [inc] = incidents(session)
+    assert (inc.occurred_at, inc.time_estimated) == (manual, True)
+
+
+def test_manual_cleared_location_stays_cleared(session, add):
+    item = add(location="Wrong St", neighborhood="Shaw")
+    match_pending(session, threshold=85)
+    _make_manual(session, location=None, manual_location=True)
+
+    reclassify(session, item, location="Other St", neighborhood="Shaw")
+    match_pending(session, threshold=85)
+    # Merges by neighborhood; its location must not fill the cleared one.
+    add(occurred_at=T0 + timedelta(minutes=10), location="Third St", neighborhood="Shaw")
+    assert match_pending(session, threshold=85)["merged"] == 1
+    [inc] = incidents(session)
+    assert (inc.location, inc.neighborhood) == (None, "Shaw")
+
+
+def test_manual_cleared_neighborhood_stays_cleared(session, add):
+    item = add(neighborhood="Soulard")
+    match_pending(session, threshold=85)
+    _make_manual(session, neighborhood=None, manual_neighborhood=True)
+
+    reclassify(session, item, neighborhood="Shaw")
+    match_pending(session, threshold=85)
+    # Merges by location; its neighborhood must not fill the cleared one.
+    add(occurred_at=T0 + timedelta(minutes=10), neighborhood="Shaw")
+    assert match_pending(session, threshold=85)["merged"] == 1
+    [inc] = incidents(session)
+    assert inc.neighborhood is None

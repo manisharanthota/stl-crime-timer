@@ -36,6 +36,23 @@ def _reported(c: Classification) -> bool:
     return c.occurred_at is not None and c.time_precision == "exact"
 
 
+def _item_time(
+    c: Classification, published_at: datetime | None
+) -> tuple[datetime | None, bool]:
+    """(occurred_at in UTC, estimated) for an item, or (None, True) without one.
+
+    A crime can't happen after the story about it was published: a later
+    occurred_at is a model error, so it's capped at published_at and counts as
+    estimated.
+    """
+    if c.occurred_at is None:
+        return None, True
+    occurred = to_utc(c.occurred_at)
+    if published_at is not None and occurred > to_utc(published_at):
+        return to_utc(published_at), True
+    return occurred, not _reported(c)
+
+
 def _latest_ids():
     """Subquery: the newest classification id of each raw_item."""
     return (
@@ -74,9 +91,10 @@ def _pending(session: Session) -> tuple[list[_Pending], int, int]:
 
     pending, skipped, skipped_followup = [], 0, 0
     for c, published_at in rows:
-        if c.occurred_at is not None:
+        occurred, estimated = _item_time(c, published_at)
+        if occurred is not None:
             # A date-only time is an estimate, like a published_at fallback.
-            pending.append(_Pending(c, to_utc(c.occurred_at), not _reported(c)))
+            pending.append(_Pending(c, occurred, estimated))
         elif c.is_followup:
             skipped_followup += 1
         elif published_at is not None:
@@ -123,7 +141,9 @@ def _merge(incident: Incident, item: _Pending) -> None:
     if _was_shooting(c):
         incident.was_shooting = True
     current = to_utc(incident.occurred_at)
-    if c.is_followup and item.estimated:
+    if incident.manual_occurred_at:
+        pass  # set by an admin: never moved
+    elif c.is_followup and item.estimated:
         # A follow-up's guessed time is often the arrest or publish day, not the
         # crime's: it may find the incident, but never moves its time.
         pass
@@ -133,9 +153,12 @@ def _merge(incident: Incident, item: _Pending) -> None:
         incident.time_estimated = False
     elif incident.time_estimated == item.estimated and item.occurred_at < current:
         incident.occurred_at = item.occurred_at
-    if incident.location is None and c.location:
+    if incident.location is None and c.location and not incident.manual_location:
         incident.location = c.location
-    if incident.neighborhood is None and c.neighborhood:
+    if (
+        incident.neighborhood is None and c.neighborhood
+        and not incident.manual_neighborhood
+    ):
         incident.neighborhood = c.neighborhood
     if c.confidence >= CONFIRM_THRESHOLD:
         incident.status = "confirmed"
@@ -152,12 +175,14 @@ def refresh_incidents(session: Session) -> int:
       estimated; otherwise its time is left alone;
     - was_shooting is turned on, never off;
     - an empty location/neighborhood is filled.
-    Rejected and merged incidents are left alone. Returns how many changed.
+    Rejected and merged incidents are left alone, and so is every field an admin
+    set by hand. Returns how many changed.
     """
     rows = session.execute(
-        select(Incident, Classification)
+        select(Incident, Classification, RawItem.published_at)
         .join(IncidentItem, IncidentItem.incident_id == Incident.id)
         .join(Classification, Classification.raw_item_id == IncidentItem.raw_item_id)
+        .join(RawItem, RawItem.id == IncidentItem.raw_item_id)
         .where(
             Incident.status.in_(LIVE_STATUSES),
             Classification.id.in_(_latest_ids()),
@@ -166,25 +191,27 @@ def refresh_incidents(session: Session) -> int:
         )
         .order_by(Incident.id, Classification.id)
     ).all()
-    by_incident: dict[int, tuple[Incident, list[Classification]]] = {}
-    for incident, c in rows:
-        by_incident.setdefault(incident.id, (incident, []))[1].append(c)
+    by_incident: dict[int, tuple[Incident, list[tuple[Classification, datetime | None]]]] = {}
+    for incident, c, published_at in rows:
+        by_incident.setdefault(incident.id, (incident, []))[1].append((c, published_at))
 
     changed = 0
-    for incident, classifications in by_incident.values():
+    for incident, items in by_incident.values():
+        classifications = [c for c, _ in items]
         before = (
             incident.occurred_at, incident.time_estimated, incident.was_shooting,
             incident.location, incident.neighborhood,
         )
-        reported = [to_utc(c.occurred_at) for c in classifications if _reported(c)]
-        if reported:
+        times = [_item_time(c, published_at) for c, published_at in items]
+        reported = [occurred for occurred, estimated in times if not estimated]
+        if reported and not incident.manual_occurred_at:
             incident.occurred_at = min(reported)
             incident.time_estimated = False
         if any(_was_shooting(c) for c in classifications):
             incident.was_shooting = True
-        if incident.location is None:
+        if incident.location is None and not incident.manual_location:
             incident.location = next((c.location for c in classifications if c.location), None)
-        if incident.neighborhood is None:
+        if incident.neighborhood is None and not incident.manual_neighborhood:
             incident.neighborhood = next(
                 (c.neighborhood for c in classifications if c.neighborhood), None
             )

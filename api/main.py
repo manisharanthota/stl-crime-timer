@@ -13,11 +13,13 @@ from api import queries
 from api.schemas import (
     HealthResponse,
     IncidentOut,
+    IncidentPatch,
     LastRun,
     StatsResponse,
     TimerResponse,
 )
 from config import get_settings
+from matcher.edit import edit_incident
 from matcher.merge import MergeError, merge_incidents
 from models import PipelineRun
 
@@ -162,3 +164,20 @@ def admin_merge(
     except MergeError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
     return queries.incident_out(queries.get_incident(session, target.id))
+
+
+@app.patch(
+    "/admin/incidents/{incident_id}",
+    response_model=IncidentOut,
+    dependencies=[Depends(require_admin)],
+)
+def admin_edit(
+    incident_id: int, patch: IncidentPatch, session: Session = Depends(get_session)
+) -> IncidentOut:
+    """Correct occurred_at/time_estimated, location, or neighborhood. Edited fields
+    become manual: the matcher never overwrites them."""
+    try:
+        edit_incident(session, incident_id, patch.model_dump(exclude_unset=True))
+    except MergeError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    return queries.incident_out(queries.get_incident(session, incident_id))
