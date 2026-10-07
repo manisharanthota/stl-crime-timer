@@ -9,7 +9,7 @@ sources:
     url: https://www.kmov.com/arc/outboundfeeds/rss/?outputType=xml
     type: news
   - name: Post-Dispatch Crime
-    url: https://www.stltoday.com/search/?f=rss&t=article&c=news/local/crime-and-courts&l=50&s=start_time&sd=desc
+    url: https://www.stltoday.com/search/?f=rss&t=article&c=news/local/crime-courts&l=50&s=start_time&sd=desc
     type: news
   - name: St. Louis Public Radio
     url: https://www.stlpr.org/news.rss
