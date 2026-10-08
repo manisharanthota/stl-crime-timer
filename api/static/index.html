@@ -52,6 +52,23 @@
   .stale { color: var(--accent); font-size: 0.875rem; }
   footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.875rem; }
   footer p { margin: 4px 0; }
+  #feedback { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  #feedback label { display: block; font-size: 0.875rem; color: var(--muted); margin: 0 0 4px; }
+  #feedback textarea, #feedback input {
+    width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px;
+  }
+  #feedback textarea { min-height: 96px; resize: vertical; }
+  #feedback .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  #feedback button {
+    font: inherit; font-weight: 600; padding: 8px 18px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: var(--card);
+  }
+  #feedback button:disabled { opacity: 0.6; cursor: default; }
+  #fb-count { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+  #fb-status { font-size: 0.9rem; }
+  #fb-status.err { color: var(--accent); }
+  .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 </style>
 </head>
 <body>
@@ -67,6 +84,23 @@
 
   <h2>Recent incidents</h2>
   <ul class="incidents" id="incidents"><li class="empty">Loading…</li></ul>
+
+  <h2>Feedback or suggestion</h2>
+  <form id="feedback" novalidate>
+    <label for="fb-message">Message</label>
+    <textarea id="fb-message" name="message" maxlength="1000" required></textarea>
+    <label for="fb-contact">Name or email (optional)</label>
+    <input id="fb-contact" name="contact" maxlength="200" autocomplete="off">
+    <div class="hp" aria-hidden="true">
+      <label for="fb-website">Leave this empty</label>
+      <input id="fb-website" name="website" tabindex="-1" autocomplete="off">
+    </div>
+    <div class="row">
+      <button type="submit" id="fb-send">Send</button>
+      <span id="fb-status" role="status"></span>
+      <span id="fb-count" class="num">0 / 1000</span>
+    </div>
+  </form>
 
   <footer>
     <p>Based on local news reports and St. Louis police (SLMPD) news releases. Not an official crime count.</p>
@@ -247,6 +281,46 @@
     if (h.status === "fulfilled") renderHealth(h.value);
     $("stale").hidden = results.every((r) => r.status === "fulfilled");
   }
+
+  const form = $("feedback"), msg = $("fb-message"), status = $("fb-status");
+  const showStatus = (text, isError) => {
+    status.textContent = text;
+    status.className = isError ? "err" : "";
+  };
+  const updateCount = () => { $("fb-count").textContent = `${msg.value.length} / 1000`; };
+  msg.addEventListener("input", updateCount);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const message = msg.value.trim();
+    if (!message) return showStatus("Please write a message first.", true);
+    $("fb-send").disabled = true;
+    showStatus("Sending…", false);
+    try {
+      const r = await fetch("/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message, contact: $("fb-contact").value.trim() || null,
+          website: $("fb-website").value || null,
+        }),
+      });
+      if (r.ok) {
+        form.reset();
+        updateCount();
+        showStatus("Thanks!", false);
+      } else if (r.status === 429) {
+        showStatus("You've sent a few already. Please try again in a bit.", true);
+      } else if (r.status === 422) {
+        showStatus("Please write a message (up to 1000 characters).", true);
+      } else {
+        showStatus("Sorry, couldn't send that right now. Please try again later.", true);
+      }
+    } catch {
+      showStatus("Sorry, couldn't send that right now. Please try again later.", true);
+    } finally {
+      $("fb-send").disabled = false;
+    }
+  });
 
   refresh();
   setInterval(tick, 1000);

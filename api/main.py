@@ -1,15 +1,20 @@
+import logging
+import math
 import secrets
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+import httpx
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from alerts import notify
 from alerts.checks import WATCHDOG_WINDOW, last_success
 from api import queries
+from api.feedback import FeedbackIn, RateLimiter, client_ip, format_message
 from api.schemas import (
     HealthResponse,
     IncidentOut,
@@ -25,7 +30,10 @@ from models import PipelineRun
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="STL Crime Tracker")
+feedback_limiter = RateLimiter()
 
 
 def get_session() -> Iterator[Session]:
@@ -53,6 +61,25 @@ def require_admin(
         x_admin_token.encode(), expected.encode()
     ):
         raise HTTPException(401, "Missing or invalid X-Admin-Token")
+
+
+def get_feedback_webhook_url() -> str | None:
+    return get_settings().feedback_webhook_url
+
+
+def get_feedback_client() -> httpx.Client | None:
+    """None = notify.send makes its own client."""
+    return None
+
+
+def get_feedback_limiter() -> RateLimiter:
+    return feedback_limiter
+
+
+def get_client_ip(
+    request: Request, x_forwarded_for: str | None = Header(default=None)
+) -> str:
+    return client_ip(x_forwarded_for, request.client.host if request.client else None)
 
 
 @app.get("/", include_in_schema=False)
@@ -181,3 +208,29 @@ def admin_edit(
     except MergeError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
     return queries.incident_out(queries.get_incident(session, incident_id))
+
+
+@app.post("/feedback")
+def feedback(
+    body: FeedbackIn,
+    ip: str = Depends(get_client_ip),
+    url: str | None = Depends(get_feedback_webhook_url),
+    client: httpx.Client | None = Depends(get_feedback_client),
+    limiter: RateLimiter = Depends(get_feedback_limiter),
+) -> dict:
+    # Honeypot filled: pretend it worked so the bot learns nothing.
+    if body.website:
+        return {"ok": True}
+    if not url:
+        logger.error("Feedback received but FEEDBACK_WEBHOOK_URL is not set")
+        raise HTTPException(503, "Feedback is not configured")
+    retry_after = limiter.hit(ip)
+    if retry_after is not None:
+        raise HTTPException(
+            429,
+            "Too many messages; please try again later",
+            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
+    if not notify.send(format_message(body.message, body.contact), url=url, client=client):
+        raise HTTPException(502, "Couldn't deliver feedback")
+    return {"ok": True}

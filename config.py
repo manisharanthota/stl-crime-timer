@@ -62,6 +62,8 @@ class Settings(BaseModel):
     alert_webhook_url: str | None = None
     alert_on_new_incident: bool = False
     alert_cooldown_hours: float = DEFAULT_ALERT_COOLDOWN_HOURS
+    # Discord webhook for the page's feedback box; unset = POST /feedback returns 503.
+    feedback_webhook_url: str | None = None
     log_to_file: bool = True
     # Fetched items published longer ago than this are skipped; 0 = no limit.
     max_item_age_days: float = DEFAULT_MAX_ITEM_AGE_DAYS
@@ -98,6 +100,7 @@ def get_settings() -> Settings:
         alert_cooldown_hours=float(
             _env("ALERT_COOLDOWN_HOURS") or DEFAULT_ALERT_COOLDOWN_HOURS
         ),
+        feedback_webhook_url=_env("FEEDBACK_WEBHOOK_URL"),
         log_to_file=_flag(_env("LOG_TO_FILE"), default=True),
         max_item_age_days=float(_env("MAX_ITEM_AGE_DAYS") or DEFAULT_MAX_ITEM_AGE_DAYS),
     )

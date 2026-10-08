@@ -58,6 +58,10 @@ def test_render_blueprint():
     (svc,) = load("render.yaml")["services"]
     assert svc["type"] == "web" and svc["plan"] == "free"
     assert re.search(r"uvicorn api\.main:app .*--port \$PORT", svc["startCommand"])
+    # Secrets are set in the dashboard, never in the file.
+    env = {e["key"]: e for e in svc["envVars"]}
+    assert "FEEDBACK_WEBHOOK_URL" in env
+    assert all(e.get("sync") is False and "value" not in e for e in env.values())
     assert "--host 0.0.0.0" in svc["startCommand"]
     assert "python -m pip install ." in svc["buildCommand"]
     assert "poetry" not in svc["buildCommand"].lower()

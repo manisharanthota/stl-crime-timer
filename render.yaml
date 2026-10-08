@@ -23,3 +23,5 @@ services:
         sync: false
       - key: ADMIN_TOKEN  # long random string; protects /admin
         sync: false
+      - key: FEEDBACK_WEBHOOK_URL  # Discord webhook for the page's feedback box
+        sync: false
