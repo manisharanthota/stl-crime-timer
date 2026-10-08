@@ -4,7 +4,7 @@
 
 This project answers that question with a live timer. It reads local news and police reports every 10 minutes, uses AI to spot new crimes in St. Louis City, and resets the timer when one happens.
 
-🔗 **Live site:** https://stl-crime-timer.onrender.com
+🔗 **Live site:** https://stlcrimetimer.com
 
 ![STL Crime Timer screenshot](docs/screenshot.png) 
 
@@ -27,13 +27,8 @@ This project answers that question with a live timer. It reads local news and po
 4. **Combine:** if several outlets report the same crime, they are merged into one incident, so one crime only counts once.
 5. **Show:** the website calculates the timers from the most recent confirmed crime.
 
-```mermaid
-flowchart LR
-    A[News & police feeds] --> B[Keyword filter]
-    B --> C[AI classifier]
-    C --> D[Merge duplicates]
-    D --> E[(Database)]
-    E --> F[Live website]
+```
+News & police feeds → Keyword filter → AI classifier → Merge duplicates → Database → Live website
 ```
 
 ---
