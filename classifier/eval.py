@@ -40,7 +40,7 @@ DEFAULT_CACHE = ROOT / ".eval_cache.json"
 # falls inside it.
 FIELDS = (
     "is_crime", "crime_type", "in_stl", "was_shooting", "is_followup",
-    "creates_incident", "occurred_at_null", "occurred_window",
+    "creates_incident", "occurred_at_null", "occurred_window", "time_precision",
 )
 
 

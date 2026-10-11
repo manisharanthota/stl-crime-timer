@@ -6,7 +6,7 @@ from matcher.neighborhoods import NEIGHBORHOODS
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v7"
+PROMPT_VERSION = "v8"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -37,20 +37,26 @@ Fields of each result:
   Jefferson County, and the Illinois Metro East (e.g. East St. Louis, Belleville)
   are NOT in the city: in_stl=false. If the location is unclear, in_stl=false.
 - occurred_at: when the crime happened (ISO 8601 with UTC offset, St. Louis local
-  time), resolved against the publish date (e.g. "Saturday night" -> that Saturday
-  around 21:00). For follow-up stories, this is when the original crime happened,
-  never when the arrest, detention, or identification happened and never when the
-  story was published. If a follow-up doesn't say when the crime itself happened,
+  time), resolved against the publish date. If the item doesn't say when the crime
+  itself happened but gives the time police were called, dispatched, or responded
+  ("officers responded at about 3:15 a.m.", "police were called around 10 p.m."),
+  use that time. If it gives only a part of the day, use its typical hour: "early"
+  morning or "overnight" 03:00, "morning" 08:00, "midday" 12:00, "afternoon"
+  15:00, "evening" 19:00, "night" or "late" 22:00 (e.g. "Saturday night" -> that
+  Saturday at 22:00, "early Sunday" -> that Sunday at 03:00). For follow-up
+  stories, this is when the original crime happened, never when the arrest,
+  detention, or identification happened and never when the story was published. If a follow-up doesn't say when the crime itself happened,
   occurred_at is null. Never default to the publish date. null if unknown.
   For a string or series of crimes reported together (e.g. "four burglaries
   Wednesday through Sunday"), occurred_at is the time of the latest one.
   occurred_at is never later than the item's published_at: a crime can't happen
   after the story about it was published.
 - time_precision: how much of occurred_at the item states.
-  "exact": it gives a clock time ("12:40 a.m.", "around 9:30 p.m.").
+  "exact": it gives a clock time ("12:40 a.m.", "around 9:30 p.m."), including
+  the time police were called, dispatched, or responded.
   "date_only": it gives only the day, or a part of the day ("Friday",
-  "early Friday", "Saturday night"); occurred_at is your estimate. If you put
-  00:00 because no time was given, this is date_only.
+  "early Friday", "Saturday night"); occurred_at is your estimate (the typical
+  hour above). If no part of the day is given, use 00:00; this is date_only.
   "unknown": no date at all; occurred_at is null.
 - location: the most specific place mentioned (address, intersection, or
   neighborhood), or null.

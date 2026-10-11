@@ -4,6 +4,7 @@
 # expected.creates_incident (is_crime and in_stl and not is_followup) and
 # expected.occurred_at_null are derived from the prediction, scored only where labeled.
 # expected.occurred_window: [earliest, latest] accepted occurred_at, scored only where labeled.
+# expected.time_precision is scored only where labeled.
 - title: "Man shot and wounded in north St. Louis' Walnut Park neighborhood"
   body: "A 34-year-old man was shot in the leg Sunday night in the 5600 block of Riverview Boulevard, St. Louis police said. He was taken to a hospital in stable condition."
   published_at: "2026-09-28T07:15:00-05:00"
@@ -138,3 +139,22 @@
   body: "St. Louis police are asking residents to stay vigilant after a string of burglaries across four city neighborhoods. They believe the same suspect may be responsible. The four overnight break-ins happened between Wednesday and Sunday, each between 1 and 4 a.m., in Soulard, Compton Heights, Shaw and Skinker-DeBaliviere."
   published_at: "2026-10-05T18:34:46-05:00"
   expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false, is_followup: false, creates_incident: true, occurred_window: ["2026-10-04T00:00:00-05:00", "2026-10-04T05:00:00-05:00"]}
+
+# Prompt v8: no crime time, but the police response time is given -> use it, exact.
+- title: "Man critically injured in north St. Louis shooting"
+  body: "A man was critically injured in a shooting early Sunday morning in north St. Louis. According to the St. Louis Metropolitan Police Department, officers responded at about 3:15 a.m. Sunday to a shooting near the intersection of North Grand Boulevard and Montgomery Street."
+  published_at: "2026-10-11T04:52:00-05:00"
+  expected: {is_crime: true, crime_type: shooting, in_stl: true, was_shooting: true, is_followup: false, time_precision: exact, occurred_window: ["2026-10-11T03:10:00-05:00", "2026-10-11T03:20:00-05:00"]}
+
+# Prompt v8: only a part of the day -> its typical hour (early morning ~03:00), not
+# midnight. Live incident (raw item 866) got Oct 11 00:00 under v7.
+- title: "Man critically injured in north St. Louis shooting"
+  body: "Police said the shooting happened early Sunday morning near North Grand Boulevard and Montgomery Street."
+  published_at: "2026-10-11T04:52:08-05:00"
+  expected: {is_crime: true, crime_type: shooting, in_stl: true, was_shooting: true, is_followup: false, time_precision: date_only, occurred_window: ["2026-10-11T02:00:00-05:00", "2026-10-11T04:52:08-05:00"]}
+
+# Prompt v8: "police were called" time with no other time.
+- title: "Burglary reported at Tower Grove South home"
+  body: "Police were called around 10:40 p.m. Thursday to a home in the 3500 block of Hartford Street in Tower Grove South, where someone had broken in through a rear window."
+  published_at: "2026-10-09T07:30:00-05:00"
+  expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false, is_followup: false, time_precision: exact, occurred_window: ["2026-10-08T22:35:00-05:00", "2026-10-08T22:45:00-05:00"]}

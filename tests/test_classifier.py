@@ -204,7 +204,7 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == PROMPT_VERSION == "v7"
+    assert c.prompt_version == PROMPT_VERSION == "v8"
     assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
@@ -835,11 +835,24 @@ def test_prompt_v6_arrests_are_followups_with_crime_time():
 
 
 def test_prompt_v7_string_of_crimes_and_publish_cap():
-    assert PROMPT_VERSION == "v7"
     text = " ".join(SYSTEM_PROMPT.split())
     assert "For a string or series of crimes" in text
     assert "occurred_at is the time of the latest one" in text
     assert "occurred_at is never later than the item's published_at" in text
+
+
+def test_prompt_v8_call_time_and_part_of_day_hours():
+    assert PROMPT_VERSION == "v8"
+    text = " ".join(SYSTEM_PROMPT.split())
+    # No crime time stated: the police call / response time stands in, as exact.
+    assert "gives the time police were called, dispatched, or responded" in text
+    assert "including the time police were called, dispatched, or responded" in text
+    # Parts of the day map to typical hours instead of midnight.
+    for phrase in ('"overnight" 03:00', '"morning" 08:00', '"afternoon" 15:00',
+                   '"evening" 19:00', '"night" or "late" 22:00',
+                   '"early Sunday" -> that Sunday at 03:00'):
+        assert phrase in text, phrase
+    assert "If no part of the day is given, use 00:00; this is date_only" in text
 
 
 def test_batch_result_requires_raw_item_id():
@@ -1061,25 +1074,28 @@ def eval_env(monkeypatch, tmp_path):
     return SimpleNamespace(cases=cases, cache=cache, make=make, settings=llms_settings)
 
 
-def test_eval_fixture_has_26_labeled_cases():
+def test_eval_fixture_has_29_labeled_cases():
     cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
-    assert len(cases) == 26
+    assert len(cases) == 29
     for case in cases:
         expected = case["expected"]
         optional = {
             "was_shooting", "is_followup", "creates_incident", "occurred_at_null",
-            "occurred_window",
+            "occurred_window", "time_precision",
         }
         assert set(expected) - optional == {"is_crime", "crime_type", "in_stl"}
         # was_shooting is labeled on exactly the crime cases.
         assert ("was_shooting" in expected) == expected["is_crime"]
     followups = [c["expected"] for c in cases if "is_followup" in c["expected"]]
     # 2 recent follow-ups (crimes), 2 about older crimes (not crimes), 1 detention,
-    # 1 first report of a string of burglaries.
+    # 1 first report of a string of burglaries, 3 first reports with v8 time cases.
     assert [(e["is_crime"], e["is_followup"]) for e in followups] == [
         (True, True), (True, True), (False, False), (False, False), (True, True),
-        (True, False),
+        (True, False), (True, False), (True, False), (True, False),
     ]
+    precisions = [c["expected"]["time_precision"] for c in cases
+                  if "time_precision" in c["expected"]]
+    assert precisions == ["exact", "date_only", "exact"]
 
 
 def test_eval_fixture_has_detention_followup():
