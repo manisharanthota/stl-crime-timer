@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Example News</title>
+    <link>https://news.example/</link>
+    <description>Local news</description>
+    <item>
+      <title>Man shot to death at basketball court in park</title>
+      <link>https://news.example/2026/10/11/park-shooting/</link>
+      <description><![CDATA[<p>Homicide detectives are investigating a fatal shooting at a basketball court.</p>]]></description>
+      <content:encoded><![CDATA[<p>ST. LOUIS &#8211; Homicide detectives are investigating a fatal shooting at a basketball court.</p>
+<p>The shooting took place around <strong>6 p.m. Saturday</strong> at Loretta&nbsp;Hall Park along Carr Street.</p>
+<script>trackView();</script>
+<p>Anyone with information should call CrimeStoppers.</p>]]></content:encoded>
+      <pubDate>Sun, 11 Oct 2026 19:42:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Summary only</title>
+      <link>https://news.example/2026/10/11/summary-only/</link>
+      <description>Police say a man was shot &amp; wounded Friday night.</description>
+      <pubDate>Sun, 11 Oct 2026 18:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Content only</title>
+      <link>https://news.example/2026/10/11/content-only/</link>
+      <content:encoded><![CDATA[<p>A business on Gravois was broken into overnight.</p>]]></content:encoded>
+      <pubDate>Sun, 11 Oct 2026 17:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>No text</title>
+      <link>https://news.example/2026/10/11/no-text/</link>
+      <pubDate>Sun, 11 Oct 2026 16:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
