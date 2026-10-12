@@ -6,7 +6,7 @@ from matcher.neighborhoods import NEIGHBORHOODS
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v9"
+PROMPT_VERSION = "v10"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -20,6 +20,9 @@ Fields of each result:
   homicide (killing) that happened within 7 days before the publish date. That
   includes follow-up stories about such a recent crime: the victim identified,
   family or friends remember the victim, a vigil, police seek or arrest a suspect.
+  A follow-up that doesn't say when the crime happened counts as recent unless the
+  item says or clearly implies it was more than 7 days ago (e.g. "last month", a
+  past year, a court case): a missing crime date alone never makes is_crime false.
 - is_followup: true if the item is a follow-up story like those (published after
   the crime and mainly about its aftermath) rather than the first report of it.
   An item mainly about an arrest, a detention, a suspect taken into custody, or a

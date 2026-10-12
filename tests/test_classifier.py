@@ -204,7 +204,7 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == PROMPT_VERSION == "v9"
+    assert c.prompt_version == PROMPT_VERSION == "v10"
     assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
@@ -855,7 +855,6 @@ def test_prompt_v8_call_time_and_part_of_day_hours():
 
 
 def test_prompt_v9_weekdays_and_no_time():
-    assert PROMPT_VERSION == "v9"
     text = " ".join(SYSTEM_PROMPT.split())
     # Weekdays resolve backwards from the publish date in St. Louis time, same day included.
     assert "resolved against the publish date in St. Louis time" in text
@@ -865,6 +864,13 @@ def test_prompt_v9_weekdays_and_no_time():
     # No day and no time: null + unknown, never the publish time.
     assert 'occurred_at is null and time_precision is "unknown"' in text
     assert "Never use the publish date or publish time as occurred_at" in text
+
+
+def test_prompt_v10_undated_followup_counts_as_recent():
+    assert PROMPT_VERSION == "v10"
+    text = " ".join(SYSTEM_PROMPT.split())
+    assert "A follow-up that doesn't say when the crime happened counts as recent" in text
+    assert "a missing crime date alone never makes is_crime false" in text
 
 
 def test_batch_result_requires_raw_item_id():
