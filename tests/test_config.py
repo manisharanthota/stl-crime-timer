@@ -71,6 +71,7 @@ STRIPPED = {
     "ALERT_COOLDOWN_HOURS": ("3", "alert_cooldown_hours", 3.0),
     "FEEDBACK_WEBHOOK_URL": ("https://discord.com/api/webhooks/2/def",
                              "feedback_webhook_url", "https://discord.com/api/webhooks/2/def"),
+    "PUBLIC_BASE_URL": ("https://example.test/", "public_base_url", "https://example.test"),
     "LOG_TO_FILE": ("false", "log_to_file", False),
     "MAX_ITEM_AGE_DAYS": ("3", "max_item_age_days", 3.0),
 }

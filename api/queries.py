@@ -6,6 +6,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from api.schemas import (
+    AdminIncidentOut,
     ArticleOut,
     Gap,
     GapEntry,
@@ -95,6 +96,15 @@ def incident_out(incident: Incident) -> IncidentOut:
     )
 
 
+def admin_incident_out(incident: Incident) -> AdminIncidentOut:
+    return AdminIncidentOut(
+        **incident_out(incident).model_dump(),
+        manual_occurred_at=incident.manual_occurred_at,
+        manual_location=incident.manual_location,
+        manual_neighborhood=incident.manual_neighborhood,
+    )
+
+
 def _with_articles():
     return selectinload(Incident.raw_items).selectinload(RawItem.source)
 
@@ -116,14 +126,31 @@ def recent_incidents(session: Session, limit: int) -> list[IncidentOut]:
     return [incident_out(i) for i in incidents]
 
 
-def review_incidents(session: Session) -> list[IncidentOut]:
+def review_incidents(session: Session) -> list[AdminIncidentOut]:
     incidents = session.scalars(
         select(Incident)
         .where(Incident.status == "review")
         .options(_with_articles())
         .order_by(Incident.occurred_at, Incident.id)
     ).all()
-    return [incident_out(i) for i in incidents]
+    return [admin_incident_out(i) for i in incidents]
+
+
+def estimated_incidents(session: Session, limit: int) -> list[AdminIncidentOut]:
+    """Newest review/confirmed incidents whose time is still an estimate (not set by
+    hand), for /admin."""
+    incidents = session.scalars(
+        select(Incident)
+        .where(
+            Incident.status.in_(("review", "confirmed")),
+            Incident.time_estimated.is_(True),
+            Incident.manual_occurred_at.is_(False),
+        )
+        .options(_with_articles())
+        .order_by(Incident.occurred_at.desc(), Incident.id.desc())
+        .limit(limit)
+    ).all()
+    return [admin_incident_out(i) for i in incidents]
 
 
 def _longest_gap(rows: list[tuple[int, datetime]], now: datetime) -> Gap | None:

@@ -204,7 +204,7 @@ def test_valid_batch_saved(session, make_item, run):
     assert c.location == "5600 block of Riverview Boulevard"
     assert c.confidence == pytest.approx(0.93)
     assert c.model == "fake-flash"
-    assert c.prompt_version == PROMPT_VERSION == "v8"
+    assert c.prompt_version == PROMPT_VERSION == "v9"
     assert c.was_shooting is True  # crime_type=shooting implies it
     system, user, schema = llm.calls[0]
     assert "City of St. Louis" in system
@@ -842,7 +842,6 @@ def test_prompt_v7_string_of_crimes_and_publish_cap():
 
 
 def test_prompt_v8_call_time_and_part_of_day_hours():
-    assert PROMPT_VERSION == "v8"
     text = " ".join(SYSTEM_PROMPT.split())
     # No crime time stated: the police call / response time stands in, as exact.
     assert "gives the time police were called, dispatched, or responded" in text
@@ -853,6 +852,19 @@ def test_prompt_v8_call_time_and_part_of_day_hours():
                    '"early Sunday" -> that Sunday at 03:00'):
         assert phrase in text, phrase
     assert "If no part of the day is given, use 00:00; this is date_only" in text
+
+
+def test_prompt_v9_weekdays_and_no_time():
+    assert PROMPT_VERSION == "v9"
+    text = " ".join(SYSTEM_PROMPT.split())
+    # Weekdays resolve backwards from the publish date in St. Louis time, same day included.
+    assert "resolved against the publish date in St. Louis time" in text
+    assert "the most recent such day on or before the publish date" in text
+    assert '"Saturday night" in an item published Sunday is the day before' in text
+    assert "never a week earlier" in text
+    # No day and no time: null + unknown, never the publish time.
+    assert 'occurred_at is null and time_precision is "unknown"' in text
+    assert "Never use the publish date or publish time as occurred_at" in text
 
 
 def test_batch_result_requires_raw_item_id():
@@ -1074,9 +1086,9 @@ def eval_env(monkeypatch, tmp_path):
     return SimpleNamespace(cases=cases, cache=cache, make=make, settings=llms_settings)
 
 
-def test_eval_fixture_has_29_labeled_cases():
+def test_eval_fixture_has_33_labeled_cases():
     cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
-    assert len(cases) == 29
+    assert len(cases) == 33
     for case in cases:
         expected = case["expected"]
         optional = {
@@ -1088,14 +1100,34 @@ def test_eval_fixture_has_29_labeled_cases():
         assert ("was_shooting" in expected) == expected["is_crime"]
     followups = [c["expected"] for c in cases if "is_followup" in c["expected"]]
     # 2 recent follow-ups (crimes), 2 about older crimes (not crimes), 1 detention,
-    # 1 first report of a string of burglaries, 3 first reports with v8 time cases.
+    # 1 first report of a string of burglaries, 3 first reports with v8 time cases,
+    # 4 first reports with v9 time cases.
     assert [(e["is_crime"], e["is_followup"]) for e in followups] == [
         (True, True), (True, True), (False, False), (False, False), (True, True),
+        (True, False), (True, False), (True, False), (True, False),
         (True, False), (True, False), (True, False), (True, False),
     ]
     precisions = [c["expected"]["time_precision"] for c in cases
                   if "time_precision" in c["expected"]]
-    assert precisions == ["exact", "date_only", "exact"]
+    assert precisions == [
+        "exact", "date_only", "exact", "date_only", "date_only", "unknown", "unknown",
+    ]
+
+
+def test_eval_fixture_has_v9_time_cases():
+    cases = eval_script.load_cases(eval_script.DEFAULT_PATH)
+    by_title = {c["title"]: c for c in cases}
+    saturday = by_title["Man wounded in Saturday night shooting in Dutchtown"]
+    assert saturday["published_at"].startswith("2026-10-11")  # a Sunday
+    assert saturday["expected"]["occurred_window"][0].startswith("2026-10-10")  # Saturday
+    same_day = by_title["Woman shot in Greater Ville"]
+    assert same_day["expected"]["occurred_window"][0].startswith("2026-10-09")
+    for title in ("Police investigate shooting in north St. Louis",
+                  "Man shot to death at basketball court in Loretta Hall Park"):
+        expected = by_title[title]["expected"]
+        assert expected["occurred_at_null"] is True
+        assert expected["time_precision"] == "unknown"
+        assert expected["creates_incident"] is True
 
 
 def test_eval_fixture_has_detention_followup():

@@ -65,6 +65,14 @@ class IncidentOut(BaseModel):
     articles: list[ArticleOut]
 
 
+class AdminIncidentOut(IncidentOut):
+    """An incident as /admin sees it: also which fields were set by hand."""
+
+    manual_occurred_at: bool
+    manual_location: bool
+    manual_neighborhood: bool
+
+
 class Gap(BaseModel):
     seconds: int
     start_incident_id: int

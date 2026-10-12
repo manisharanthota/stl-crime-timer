@@ -15,6 +15,7 @@ DEFAULT_MATCH_LOCATION_THRESHOLD = 85.0
 DEFAULT_PIPELINE_INTERVAL_MINUTES = 10.0
 DEFAULT_ALERT_COOLDOWN_HOURS = 6.0
 DEFAULT_MAX_ITEM_AGE_DAYS = 7.0
+DEFAULT_PUBLIC_BASE_URL = "https://stlcrimetimer.com"
 
 
 def _env(name: str) -> str | None:
@@ -64,6 +65,8 @@ class Settings(BaseModel):
     alert_cooldown_hours: float = DEFAULT_ALERT_COOLDOWN_HOURS
     # Discord webhook for the page's feedback box; unset = POST /feedback returns 503.
     feedback_webhook_url: str | None = None
+    # Where the site is served; alerts link to its /admin page.
+    public_base_url: str = DEFAULT_PUBLIC_BASE_URL
     log_to_file: bool = True
     # Fetched items published longer ago than this are skipped; 0 = no limit.
     max_item_age_days: float = DEFAULT_MAX_ITEM_AGE_DAYS
@@ -101,6 +104,7 @@ def get_settings() -> Settings:
             _env("ALERT_COOLDOWN_HOURS") or DEFAULT_ALERT_COOLDOWN_HOURS
         ),
         feedback_webhook_url=_env("FEEDBACK_WEBHOOK_URL"),
+        public_base_url=(_env("PUBLIC_BASE_URL") or DEFAULT_PUBLIC_BASE_URL).rstrip("/"),
         log_to_file=_flag(_env("LOG_TO_FILE"), default=True),
         max_item_age_days=float(_env("MAX_ITEM_AGE_DAYS") or DEFAULT_MAX_ITEM_AGE_DAYS),
     )

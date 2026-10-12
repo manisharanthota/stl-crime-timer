@@ -133,7 +133,8 @@
     return e;
   };
   const pad = (n) => String(n).padStart(2, "0");
-  const when = (iso, estimated) => (estimated ? "~" : "") + fmt.format(new Date(iso));
+  // Estimated = the report gave no clock time (or none at all), so it's our best guess.
+  const when = (iso, estimated) => fmt.format(new Date(iso)) + (estimated ? " (time approximate)" : "");
 
   function duration(total) {
     total = Math.max(0, Math.floor(total));

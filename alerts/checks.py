@@ -23,6 +23,9 @@ SOURCE_FAIL_THRESHOLD = 5
 WATCHDOG_WINDOW = timedelta(minutes=30)
 STUCK_MIN_ITEMS = 20  # alert when more than this many are stuck
 STUCK_AGE = timedelta(hours=2)
+# Estimated-time alerts only look at incidents created this recently, so the first
+# deploy doesn't announce every old estimate.
+ESTIMATED_LOOKBACK = timedelta(hours=48)
 
 WATCHDOG_KEY = "watchdog"
 QUOTA_KEY = "llm_quota"
@@ -104,6 +107,12 @@ def _article_url(incident: Incident) -> str | None:
     return items[0].url if items else None
 
 
+def admin_link(incident_id: int) -> str:
+    """The /admin page opened on one incident. The token is typed into the page, never
+    put in the link."""
+    return f"{get_settings().public_base_url}/admin#incident={incident_id}"
+
+
 def _incident_line(incident: Incident) -> str:
     kind = incident.crime_type + (" (shooting)" if incident.was_shooting and incident.crime_type == "homicide" else "")
     place = incident.location or "location unknown"
@@ -111,7 +120,14 @@ def _incident_line(incident: Incident) -> str:
         place += f" ({incident.neighborhood})"
     when = _fmt(incident.occurred_at) + (" (estimated)" if incident.time_estimated else "")
     url = _article_url(incident)
-    return f"#{incident.id} **{kind}**: {place}, {when}" + (f"\n{url}" if url else "")
+    line = f"#{incident.id} **{kind}**: {place}, {when}" + (f"\n{url}" if url else "")
+    if incident.time_estimated:
+        line += f"\nFix: <{admin_link(incident.id)}>"
+    return line
+
+
+def _estimated_key(incident: Incident) -> str:
+    return f"estimated:{incident.id}:{incident.status}"
 
 
 def check_new_incidents(session: Session, run: PipelineRun, now: datetime, send: Sender) -> None:
@@ -135,10 +151,36 @@ def check_new_incidents(session: Session, run: PipelineRun, now: datetime, send:
             continue
         text = f"{title} ({len(pending)}):\n" + "\n".join(_incident_line(i) for i in pending)
         if status == "review":
-            text += "\nConfirm or reject in /admin/review."
+            text += f"\nConfirm or reject at <{get_settings().public_base_url}/admin>."
         if send(text):
             for incident in pending:
                 store.mark_sent(session, f"{prefix}:{incident.id}", now)
+                # That message already flagged the estimate and linked the fix.
+                if incident.time_estimated:
+                    store.mark_sent(session, _estimated_key(incident), now)
+
+
+def check_estimated_times(session: Session, now: datetime, send: Sender) -> None:
+    """Alert when a recent review or confirmed incident has an estimated time that
+    nobody has set by hand, so it can be checked and fixed on /admin. Sent once per
+    incident per status: a review incident that gets confirmed alerts again."""
+    candidates = session.scalars(
+        select(Incident).where(
+            Incident.status.in_(("review", "confirmed")),
+            Incident.time_estimated.is_(True),
+            Incident.manual_occurred_at.is_(False),
+            Incident.created_at >= now - ESTIMATED_LOOKBACK,
+        ).order_by(Incident.id)
+    ).all()
+    pending = [i for i in candidates if not store.was_sent(session, _estimated_key(i))]
+    if not pending:
+        return
+    text = f"🕒 Estimated time, please check ({len(pending)}):\n" + "\n".join(
+        f"[{i.status}] " + _incident_line(i) for i in pending
+    )
+    if send(text):
+        for incident in pending:
+            store.mark_sent(session, _estimated_key(incident), now)
 
 
 def last_success(session: Session) -> datetime | None:
@@ -210,6 +252,7 @@ def check_after_run(
         ("quota", lambda: check_quota(session, run, now, send)),
         ("stuck", lambda: check_stuck(session, now, send)),
         ("incidents", lambda: check_new_incidents(session, run, now, send)),
+        ("estimated", lambda: check_estimated_times(session, now, send)),
     ]
     if run.status == "success":
         checks.append(("watchdog", lambda: recover_watchdog(session, now, send)))

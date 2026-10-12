@@ -286,6 +286,11 @@ Good to know:
 - Render's own health check uses `/`, not `/health`, on purpose: `/health` is 503
   whenever the pipeline is late, and that shouldn't make Render think the website is
   broken.
+- The admin page is `https://stlcrimetimer.com/admin`: type the admin token in (it's kept
+  only in that browser tab's sessionStorage) to confirm/reject incidents and fix times,
+  locations and neighborhoods. Discord alerts for estimated times link straight to
+  `/admin#incident=ID`. Five wrong tokens from one IP lock it out for 15 minutes. Set
+  the `PUBLIC_BASE_URL` Actions secret only if the site isn't at stlcrimetimer.com.
 - To use the admin endpoints from PowerShell:
   ```powershell
   $h = @{ "X-Admin-Token" = (Read-Host "Admin token") }

@@ -89,11 +89,14 @@ def add_item(session, source, created_at=NOW, status="new", url=None):
     return item
 
 
-def add_incident(session, source, status="review", created_at=NOW, url="https://ksdk.test/shot"):
+def add_incident(session, source, status="review", created_at=NOW, url="https://ksdk.test/shot",
+                 time_estimated=False, manual_occurred_at=False):
     item = add_item(session, source, status="classified", url=url)
     incident = Incident(crime_type="shooting", occurred_at=NOW - timedelta(hours=1),
                         location="4500 Natural Bridge Ave", neighborhood="Penrose",
-                        was_shooting=True, status=status, created_at=created_at)
+                        was_shooting=True, status=status, created_at=created_at,
+                        time_estimated=time_estimated,
+                        manual_occurred_at=manual_occurred_at)
     session.add(incident)
     session.flush()
     session.add(IncidentItem(incident_id=incident.id, raw_item_id=item.id))
@@ -339,6 +342,99 @@ def test_failed_incident_send_retried_next_run(session, hook):
     assert len(hook.messages) == 1
 
 
+# --- estimated times --------------------------------------------------------
+
+FIX = "https://stlcrimetimer.com/admin#incident="
+
+
+def test_estimated_review_incident_links_fix_once(session, hook):
+    source = add_source(session)
+    run = add_run(session, started_at=NOW - timedelta(minutes=2))
+    inc = add_incident(session, source, time_estimated=True)
+
+    checks.check_new_incidents(session, run, NOW, hook.send)
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert len(hook.messages) == 1  # the review alert covers it
+    text = hook.messages[0]
+    assert "(estimated)" in text and f"Fix: <{FIX}{inc.id}>" in text
+    assert "Confirm or reject at <https://stlcrimetimer.com/admin>." in text
+
+
+def test_reported_time_has_no_fix_link(session, hook):
+    source = add_source(session)
+    run = add_run(session, started_at=NOW - timedelta(minutes=2))
+    add_incident(session, source)
+    checks.check_new_incidents(session, run, NOW, hook.send)
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert len(hook.messages) == 1 and "Fix:" not in hook.messages[0]
+
+
+def test_confirmed_estimated_incident_alerts_once_with_link(session, hook, monkeypatch):
+    set_env(monkeypatch, ADMIN_TOKEN="tok-123")
+    source = add_source(session)
+    inc = add_incident(session, source, status="confirmed", time_estimated=True,
+                       url="https://fox2.test/story")
+
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert len(hook.messages) == 1
+    text = hook.messages[0]
+    assert text.startswith("🕒 Estimated time, please check (1):")
+    assert f"[confirmed] #{inc.id}" in text and "https://fox2.test/story" in text
+    assert f"<{FIX}{inc.id}>" in text
+    assert "tok-123" not in text  # the token never goes to Discord
+
+    checks.check_estimated_times(session, NOW + timedelta(hours=7), hook.send)
+    assert len(hook.messages) == 1
+
+
+def test_estimated_alert_again_when_review_is_confirmed(session, hook):
+    source = add_source(session)
+    inc = add_incident(session, source, time_estimated=True)
+    checks.check_estimated_times(session, NOW, hook.send)
+    inc.status = "confirmed"
+    session.commit()
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert len(hook.messages) == 2
+    assert "[review]" in hook.messages[0] and "[confirmed]" in hook.messages[1]
+
+
+def test_estimated_alert_skips_fixed_rejected_and_old(session, hook):
+    source = add_source(session)
+    add_incident(session, source, status="confirmed", time_estimated=True,
+                 manual_occurred_at=True, url="https://a.test/1")
+    add_incident(session, source, status="rejected", time_estimated=True, url="https://a.test/2")
+    add_incident(session, source, status="confirmed", time_estimated=True,
+                 created_at=NOW - timedelta(hours=49), url="https://a.test/3")
+    add_incident(session, source, status="confirmed", url="https://a.test/4")
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert hook.messages == []
+
+
+def test_estimated_alerts_share_one_message(session, hook):
+    source = add_source(session)
+    a = add_incident(session, source, status="confirmed", time_estimated=True, url="https://a.test/1")
+    b = add_incident(session, source, status="confirmed", time_estimated=True, url="https://a.test/2")
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert len(hook.messages) == 1
+    assert f"{FIX}{a.id}" in hook.messages[0] and f"{FIX}{b.id}" in hook.messages[0]
+
+
+def test_failed_estimated_send_retried(session, hook):
+    source = add_source(session)
+    add_incident(session, source, status="confirmed", time_estimated=True)
+    checks.check_estimated_times(session, NOW, Webhook(status=500).send)
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert len(hook.messages) == 1
+
+
+def test_fix_link_uses_public_base_url(session, hook, monkeypatch):
+    set_env(monkeypatch, PUBLIC_BASE_URL="https://staging.example/ ")
+    source = add_source(session)
+    inc = add_incident(session, source, status="confirmed", time_estimated=True)
+    checks.check_estimated_times(session, NOW, hook.send)
+    assert f"<https://staging.example/admin#incident={inc.id}>" in hook.messages[0]
+
+
 # --- watchdog ---------------------------------------------------------------
 
 
@@ -422,6 +518,14 @@ def test_check_after_run_covers_all_conditions(session, hook):
     text = "\n".join(hook.messages)
     for expected in ("Source down", "LLM quota", "Backlog", "Needs your review", "healthy again"):
         assert expected in text
+
+
+def test_check_after_run_alerts_estimated_times(session, hook):
+    source = add_source(session)
+    run = add_run(session, started_at=NOW - timedelta(minutes=2), finished_at=NOW)
+    add_incident(session, source, status="confirmed", time_estimated=True)
+    checks.check_after_run(session, run, now=NOW, send=hook.send)
+    assert any("Estimated time" in m for m in hook.messages)
 
 
 def test_one_failing_check_does_not_stop_the_others(session, hook, monkeypatch, caplog):

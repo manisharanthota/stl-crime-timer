@@ -65,6 +65,8 @@ def no_real_alerts(monkeypatch):
     monkeypatch.setenv("ALERT_ON_NEW_INCIDENT", "")
     monkeypatch.setenv("ALERT_COOLDOWN_HOURS", "")
     monkeypatch.setenv("FEEDBACK_WEBHOOK_URL", "")
+    # Alert links use the default site, whatever .env says.
+    monkeypatch.setenv("PUBLIC_BASE_URL", "")
 
     def _blocked(*args, **kwargs):
         raise AssertionError("tests must not create a real alert webhook client")

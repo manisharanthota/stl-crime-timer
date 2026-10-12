@@ -81,6 +81,20 @@ class RateLimiter:
             hits.append(now)
             return None
 
+    def blocked(self, key: str) -> float | None:
+        """Like hit() but records nothing: the seconds until `key` may hit again, or
+        None if it may now."""
+        now = self.clock()
+        with self._lock:
+            hits = self._hits.get(key)
+            if not hits:
+                return None
+            while hits and hits[0] <= now - self.window:
+                hits.popleft()
+            if len(hits) >= self.limit:
+                return hits[0] + self.window - now
+            return None
+
     def _prune(self, now: float) -> None:
         for key in [k for k, h in self._hits.items() if not h or h[-1] <= now - self.window]:
             del self._hits[key]

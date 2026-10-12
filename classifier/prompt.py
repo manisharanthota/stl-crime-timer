@@ -6,7 +6,7 @@ from matcher.neighborhoods import NEIGHBORHOODS
 from models import RawItem
 from timeutil import to_local
 
-PROMPT_VERSION = "v8"
+PROMPT_VERSION = "v9"
 
 SYSTEM_PROMPT = """\
 You classify local news items for a tracker of violent and property crime in the
@@ -37,8 +37,12 @@ Fields of each result:
   Jefferson County, and the Illinois Metro East (e.g. East St. Louis, Belleville)
   are NOT in the city: in_stl=false. If the location is unclear, in_stl=false.
 - occurred_at: when the crime happened (ISO 8601 with UTC offset, St. Louis local
-  time), resolved against the publish date. If the item doesn't say when the crime
-  itself happened but gives the time police were called, dispatched, or responded
+  time), resolved against the publish date in St. Louis time. A weekday name means
+  the most recent such day on or before the publish date, the same day if the item
+  was published that weekday: "Saturday night" in an item published Sunday is the
+  day before; "early Friday" in an item published Friday is that same Friday, never
+  a week earlier. "Last night" is the night before the publish date. If the item
+  doesn't say when the crime itself happened but gives the time police were called, dispatched, or responded
   ("officers responded at about 3:15 a.m.", "police were called around 10 p.m."),
   use that time. If it gives only a part of the day, use its typical hour: "early"
   morning or "overnight" 03:00, "morning" 08:00, "midday" 12:00, "afternoon"
@@ -46,7 +50,10 @@ Fields of each result:
   Saturday at 22:00, "early Sunday" -> that Sunday at 03:00). For follow-up
   stories, this is when the original crime happened, never when the arrest,
   detention, or identification happened and never when the story was published. If a follow-up doesn't say when the crime itself happened,
-  occurred_at is null. Never default to the publish date. null if unknown.
+  occurred_at is null. If the item gives no day and no time for the crime (e.g. a
+  short summary that only says police are investigating a shooting), occurred_at is
+  null and time_precision is "unknown". Never use the publish date or publish time
+  as occurred_at.
   For a string or series of crimes reported together (e.g. "four burglaries
   Wednesday through Sunday"), occurred_at is the time of the latest one.
   occurred_at is never later than the item's published_at: a crime can't happen

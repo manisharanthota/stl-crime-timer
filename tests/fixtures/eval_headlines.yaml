@@ -158,3 +158,31 @@
   body: "Police were called around 10:40 p.m. Thursday to a home in the 3500 block of Hartford Street in Tower Grove South, where someone had broken in through a rear window."
   published_at: "2026-10-09T07:30:00-05:00"
   expected: {is_crime: true, crime_type: burglary, in_stl: true, was_shooting: false, is_followup: false, time_precision: exact, occurred_window: ["2026-10-08T22:35:00-05:00", "2026-10-08T22:45:00-05:00"]}
+
+# Prompt v9: a weekday resolves to the most recent such day on or before the publish
+# date. Published Sunday, "Saturday night" is the day before (~22:00), not Sunday.
+- title: "Man wounded in Saturday night shooting in Dutchtown"
+  body: "A man was shot Saturday night in the 3900 block of Virginia Avenue in the Dutchtown neighborhood of St. Louis, police said. He is expected to survive."
+  published_at: "2026-10-11T09:15:00-05:00"
+  expected: {is_crime: true, crime_type: shooting, in_stl: true, was_shooting: true, is_followup: false, time_precision: date_only, occurred_window: ["2026-10-10T19:00:00-05:00", "2026-10-10T23:59:00-05:00"]}
+
+# Prompt v9: published Friday, "early Friday" is that same Friday, never a week earlier
+# (a live item once got the Friday before).
+- title: "Woman shot in Greater Ville"
+  body: "A woman was shot early Friday in the 4200 block of Lexington Avenue in the Greater Ville neighborhood of St. Louis, police said."
+  published_at: "2026-10-09T17:20:00-05:00"
+  expected: {is_crime: true, crime_type: shooting, in_stl: true, was_shooting: true, is_followup: false, time_precision: date_only, occurred_window: ["2026-10-09T00:00:00-05:00", "2026-10-09T06:00:00-05:00"]}
+
+# Prompt v9: a summary with no day and no time -> occurred_at null, unknown. Never
+# the publish time.
+- title: "Police investigate shooting in north St. Louis"
+  body: "St. Louis police are investigating a shooting in the Walnut Park East neighborhood. A man was taken to a hospital with a gunshot wound."
+  published_at: "2026-10-11T14:05:00-05:00"
+  expected: {is_crime: true, crime_type: shooting, in_stl: true, was_shooting: true, is_followup: false, creates_incident: true, occurred_at_null: true, time_precision: unknown}
+
+# The real FOX 2 case (raw item 890): the feed's summary has no time, and the incident
+# took the publish time (Sun Oct 11 2:42 PM). The killing was around 6 PM Saturday.
+- title: "Man shot to death at basketball court in Loretta Hall Park"
+  body: "Homicide detectives with the St. Louis Metropolitan Police Department are investigating a fatal shooting at a basketball court along the northern edge of Downtown West."
+  published_at: "2026-10-11T14:42:29-05:00"
+  expected: {is_crime: true, crime_type: homicide, in_stl: true, was_shooting: true, is_followup: false, creates_incident: true, occurred_at_null: true, time_precision: unknown}

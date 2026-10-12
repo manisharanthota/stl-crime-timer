@@ -208,6 +208,18 @@ def test_rate_limiter_window(clock):
     assert limiter.hit("b") is None
 
 
+def test_rate_limiter_blocked_peeks_without_recording(clock):
+    limiter = RateLimiter(limit=2, window=10, clock=clock)
+    assert limiter.blocked("a") is None
+    limiter.hit("a")
+    assert limiter.blocked("a") is None
+    assert limiter.blocked("a") is None  # peeking records nothing
+    limiter.hit("a")
+    assert limiter.blocked("a") == 10
+    clock.now += 10
+    assert limiter.blocked("a") is None
+
+
 def test_rate_limiter_prunes_idle_keys(clock):
     limiter = RateLimiter(limit=1, window=10, clock=clock)
     for i in range(10_001):

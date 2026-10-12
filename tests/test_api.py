@@ -4,7 +4,17 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from api.main import app, get_admin_token, get_now, get_session
+from api.feedback import RateLimiter
+from api.main import (
+    ADMIN_FAIL_LIMIT,
+    ADMIN_FAIL_WINDOW,
+    ADMIN_RATE_LIMIT,
+    app,
+    get_admin_limiters,
+    get_admin_token,
+    get_now,
+    get_session,
+)
 from models import Incident, IncidentItem, RawItem, Source, hash_url
 
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
@@ -12,8 +22,30 @@ TOKEN = "s3cret"
 AUTH = {"X-Admin-Token": TOKEN}
 
 
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
 @pytest.fixture
-def client(session_factory):
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def admin_limiters(clock):
+    """Fresh per test: the app's limiters are module globals."""
+    return (
+        RateLimiter(ADMIN_RATE_LIMIT, 60.0, clock=clock),
+        RateLimiter(ADMIN_FAIL_LIMIT, ADMIN_FAIL_WINDOW, clock=clock),
+    )
+
+
+@pytest.fixture
+def client(session_factory, admin_limiters):
     def override():
         with session_factory() as s:
             yield s
@@ -21,6 +53,7 @@ def client(session_factory):
     app.dependency_overrides[get_session] = override
     app.dependency_overrides[get_now] = lambda: NOW
     app.dependency_overrides[get_admin_token] = lambda: TOKEN
+    app.dependency_overrides[get_admin_limiters] = lambda: admin_limiters
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -315,6 +348,82 @@ def test_admin_disabled_without_configured_token(client, method, path, configure
     assert r.status_code == 503
 
 
+@pytest.mark.parametrize("headers,detail", [
+    ({}, "Missing X-Admin-Token"),
+    ({"X-Admin-Token": "wrong"}, "Wrong admin token"),
+])
+def test_admin_401_says_what_is_wrong(client, headers, detail):
+    r = client.get("/admin/review", headers=headers)
+    assert (r.status_code, r.json()["detail"]) == (401, detail)
+
+
+def test_admin_wrong_tokens_lock_out_the_ip(client, clock):
+    for _ in range(ADMIN_FAIL_LIMIT):
+        assert client.get("/admin/review", headers={"X-Admin-Token": "guess"}).status_code == 401
+    # Locked out, even with the right token, so guessing can't continue.
+    r = client.get("/admin/review", headers=AUTH)
+    assert r.status_code == 429
+    assert "wrong admin tokens" in r.json()["detail"]
+    assert int(r.headers["Retry-After"]) == ADMIN_FAIL_WINDOW
+    # Another IP (Render appends the client as the last X-Forwarded-For entry) is fine.
+    other = {**AUTH, "X-Forwarded-For": "203.0.113.9"}
+    assert client.get("/admin/review", headers=other).status_code == 200
+    clock.now += ADMIN_FAIL_WINDOW
+    assert client.get("/admin/review", headers=AUTH).status_code == 200
+
+
+def test_admin_right_token_does_not_count_as_failure(client):
+    for _ in range(ADMIN_FAIL_LIMIT + 1):
+        assert client.get("/admin/review", headers=AUTH).status_code == 200
+
+
+def test_admin_requests_rate_limited(client, clock):
+    for _ in range(ADMIN_RATE_LIMIT):
+        assert client.get("/admin/review", headers=AUTH).status_code == 200
+    r = client.get("/admin/review", headers=AUTH)
+    assert r.status_code == 429 and "Retry-After" in r.headers
+    clock.now += 60
+    assert client.get("/admin/review", headers=AUTH).status_code == 200
+
+
+def test_admin_disabled_does_not_count_failures(client, admin_limiters):
+    app.dependency_overrides[get_admin_token] = lambda: None
+    for _ in range(ADMIN_FAIL_LIMIT + 1):
+        assert client.get("/admin/review", headers={"X-Admin-Token": "x"}).status_code == 503
+    assert admin_limiters[1].blocked("testclient") is None
+
+
+def test_admin_get_incident_shows_manual_flags(client, add):
+    inc = add("shooting", hours_ago=3, time_estimated=True, articles=1)
+    body = client.get(f"/admin/incidents/{inc}", headers=AUTH).json()
+    assert body["id"] == inc and body["time_estimated"] is True
+    assert (body["manual_occurred_at"], body["manual_location"], body["manual_neighborhood"]) == (
+        False, False, False,
+    )
+    edit(client, inc, {"location": "Grand and Gravois"})
+    body = client.get(f"/admin/incidents/{inc}", headers=AUTH).json()
+    assert body["manual_location"] is True and body["location"] == "Grand and Gravois"
+    assert client.get("/admin/incidents/999", headers=AUTH).status_code == 404
+
+
+def test_admin_estimated_lists_unchecked_estimates(client, add):
+    newer = add("shooting", hours_ago=1, time_estimated=True, status="review")
+    older = add("burglary", hours_ago=5, time_estimated=True)
+    add("homicide", hours_ago=2)  # reported time
+    add("shooting", hours_ago=3, time_estimated=True, status="rejected")
+    fixed = add("shooting", hours_ago=4, time_estimated=True)
+    edit(client, fixed, {"time_estimated": True})  # checked by hand, still approximate
+
+    body = client.get("/admin/estimated", headers=AUTH).json()
+    assert [i["id"] for i in body] == [newer, older]
+    assert client.get("/admin/estimated").status_code == 401
+
+
+def test_public_incidents_hide_manual_flags(client, add):
+    add("shooting")
+    assert "manual_occurred_at" not in client.get("/incidents").json()[0]
+
+
 def test_admin_review_lists_review_incidents(client, add):
     later = add("shooting", hours_ago=1, status="review", articles=1)
     earlier = add("burglary", hours_ago=5, status="review")
@@ -356,6 +465,35 @@ def test_page_loads(client):
     assert "America/Chicago" in html
     for path in ("/timer", "/stats", "/incidents", "/health"):
         assert path in html
+
+
+def test_page_labels_approximate_times(client):
+    html = client.get("/").text
+    assert "(time approximate)" in html
+    assert '"~"' not in html
+
+
+def test_admin_page_is_noindex_and_holds_no_token(client):
+    r = client.get("/admin")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert r.headers["x-robots-tag"] == "noindex, nofollow"
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["referrer-policy"] == "no-referrer"
+    html = r.text
+    assert '<meta name="robots" content="noindex, nofollow">' in html
+    assert TOKEN not in html
+    # The token lives in sessionStorage and goes out only as a header.
+    assert "sessionStorage" in html and "localStorage" not in html
+    assert '"X-Admin-Token": token' in html
+    assert "Wrong admin token" in html
+    for path in ("/admin/review", "/admin/estimated", "/admin/incidents/"):
+        assert path in html
+
+
+def test_admin_page_needs_no_token(client):
+    app.dependency_overrides[get_admin_token] = lambda: None
+    assert client.get("/admin").status_code == 200
 
 
 # --- admin merge ---
