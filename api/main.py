@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from alerts import notify
 from alerts.checks import WATCHDOG_WINDOW, last_success
 from api import queries
+from api.cache import CACHE_CONTROL, ReadCache
 from api.feedback import FeedbackIn, RateLimiter, client_ip, format_message
 from api.schemas import (
     AdminIncidentOut,
@@ -49,6 +50,9 @@ app = FastAPI(title="STL Crime Tracker")
 feedback_limiter = RateLimiter()
 admin_limiter = RateLimiter(ADMIN_RATE_LIMIT, ADMIN_RATE_WINDOW)
 admin_fail_limiter = RateLimiter(ADMIN_FAIL_LIMIT, ADMIN_FAIL_WINDOW)
+# Public reads (/timer, /stats, /incidents, /health) hit the database at most once
+# per key per 2 minutes; see api/cache.py. Admin writes clear it.
+read_cache = ReadCache()
 
 
 def get_session() -> Iterator[Session]:
@@ -83,6 +87,10 @@ def get_client_ip(
     request: Request, x_forwarded_for: str | None = Header(default=None)
 ) -> str:
     return client_ip(x_forwarded_for, request.client.host if request.client else None)
+
+
+def get_read_cache() -> ReadCache:
+    return read_cache
 
 
 def get_admin_limiters() -> tuple[RateLimiter, RateLimiter]:
@@ -139,18 +147,24 @@ def health(
     response: Response,
     session: Session = Depends(get_session),
     now: datetime = Depends(get_now),
+    cache: ReadCache = Depends(get_read_cache),
 ) -> HealthResponse:
     """503 when no pipeline run has succeeded in the last 30 minutes (or ever), so an
     external uptime monitor notices when the scheduled runs stop."""
-    run = session.scalars(
-        select(PipelineRun).order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
-    ).first()
-    last_run = None
-    if run is not None:
-        last_run = LastRun(
+
+    def load() -> tuple[LastRun | None, datetime | None]:
+        run = session.execute(
+            select(PipelineRun.started_at, PipelineRun.finished_at, PipelineRun.status)
+            .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+            .limit(1)
+        ).first()
+        last_run = None if run is None else LastRun(
             started_at=run.started_at, finished_at=run.finished_at, status=run.status
         )
-    success_at = last_success(session)
+        return last_run, last_success(session)
+
+    last_run, success_at = cache.get("health", load)
+    response.headers["Cache-Control"] = CACHE_CONTROL
     fresh = success_at is not None and now - success_at < WATCHDOG_WINDOW
     if not fresh:
         response.status_code = 503
@@ -161,23 +175,41 @@ def health(
 
 @app.get("/timer", response_model=TimerResponse)
 def timer(
-    session: Session = Depends(get_session), now: datetime = Depends(get_now)
+    response: Response,
+    session: Session = Depends(get_session),
+    now: datetime = Depends(get_now),
+    cache: ReadCache = Depends(get_read_cache),
 ) -> TimerResponse:
-    return queries.timer(session, now)
+    # Cached rows, fresh seconds_since: the clock is right even on a cache hit.
+    response.headers["Cache-Control"] = CACHE_CONTROL
+    return queries.build_timer(cache.get("timer", lambda: queries.load_latest(session)), now)
 
 
 @app.get("/incidents", response_model=list[IncidentOut])
 def incidents(
-    limit: int = Query(20, ge=1, le=100), session: Session = Depends(get_session)
+    response: Response,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=10_000),
+    session: Session = Depends(get_session),
+    cache: ReadCache = Depends(get_read_cache),
 ) -> list[IncidentOut]:
-    return queries.recent_incidents(session, limit)
+    """One page of confirmed incidents, newest first (`offset` pages back)."""
+    response.headers["Cache-Control"] = CACHE_CONTROL
+    return cache.get(
+        ("incidents", limit, offset),
+        lambda: queries.recent_incidents(session, limit, offset),
+    )
 
 
 @app.get("/stats", response_model=StatsResponse)
 def stats(
-    session: Session = Depends(get_session), now: datetime = Depends(get_now)
+    response: Response,
+    session: Session = Depends(get_session),
+    now: datetime = Depends(get_now),
+    cache: ReadCache = Depends(get_read_cache),
 ) -> StatsResponse:
-    return queries.stats(session, now)
+    response.headers["Cache-Control"] = CACHE_CONTROL
+    return queries.build_stats(cache.get("stats", lambda: queries.load_stats_rows(session)), now)
 
 
 @app.get(
@@ -217,10 +249,13 @@ def admin_incident(incident_id: int, session: Session = Depends(get_session)) ->
     return queries.admin_incident_out(_get_or_404(session, incident_id))
 
 
-def _set_status(session: Session, incident_id: int, status: str) -> AdminIncidentOut:
+def _set_status(
+    session: Session, cache: ReadCache, incident_id: int, status: str
+) -> AdminIncidentOut:
     incident = _get_or_404(session, incident_id)
     incident.status = status
     session.commit()
+    cache.clear()
     return queries.admin_incident_out(incident)
 
 
@@ -229,8 +264,12 @@ def _set_status(session: Session, incident_id: int, status: str) -> AdminInciden
     response_model=AdminIncidentOut,
     dependencies=[Depends(require_admin)],
 )
-def admin_confirm(incident_id: int, session: Session = Depends(get_session)) -> AdminIncidentOut:
-    return _set_status(session, incident_id, "confirmed")
+def admin_confirm(
+    incident_id: int,
+    session: Session = Depends(get_session),
+    cache: ReadCache = Depends(get_read_cache),
+) -> AdminIncidentOut:
+    return _set_status(session, cache, incident_id, "confirmed")
 
 
 @app.post(
@@ -238,8 +277,12 @@ def admin_confirm(incident_id: int, session: Session = Depends(get_session)) -> 
     response_model=AdminIncidentOut,
     dependencies=[Depends(require_admin)],
 )
-def admin_reject(incident_id: int, session: Session = Depends(get_session)) -> AdminIncidentOut:
-    return _set_status(session, incident_id, "rejected")
+def admin_reject(
+    incident_id: int,
+    session: Session = Depends(get_session),
+    cache: ReadCache = Depends(get_read_cache),
+) -> AdminIncidentOut:
+    return _set_status(session, cache, incident_id, "rejected")
 
 
 @app.post(
@@ -251,12 +294,14 @@ def admin_merge(
     incident_id: int,
     into: int = Query(..., description="id of the incident to merge into"),
     session: Session = Depends(get_session),
+    cache: ReadCache = Depends(get_read_cache),
 ) -> AdminIncidentOut:
     """Fold incident_id into `into`; incident_id becomes status=merged."""
     try:
         target = merge_incidents(session, incident_id, into)
     except MergeError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
+    cache.clear()
     return queries.admin_incident_out(queries.get_incident(session, target.id))
 
 
@@ -266,7 +311,10 @@ def admin_merge(
     dependencies=[Depends(require_admin)],
 )
 def admin_edit(
-    incident_id: int, patch: IncidentPatch, session: Session = Depends(get_session)
+    incident_id: int,
+    patch: IncidentPatch,
+    session: Session = Depends(get_session),
+    cache: ReadCache = Depends(get_read_cache),
 ) -> AdminIncidentOut:
     """Correct occurred_at/time_estimated, location, or neighborhood. Edited fields
     become manual: the matcher never overwrites them."""
@@ -274,6 +322,7 @@ def admin_edit(
         edit_incident(session, incident_id, patch.model_dump(exclude_unset=True))
     except MergeError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
+    cache.clear()
     return queries.admin_incident_out(queries.get_incident(session, incident_id))
 
 

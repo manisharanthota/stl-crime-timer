@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import app, get_now, get_session
+from api.main import app, get_now, get_session, read_cache
 from models import PipelineRun
 
 NOW = datetime(2026, 10, 4, 13, 0, tzinfo=timezone.utc)
@@ -109,6 +109,7 @@ def test_health_head(client, session_factory):
     """Uptime monitors check with HEAD; it must give the same status as GET."""
     assert client.head("/health").status_code == 503
     add_run(session_factory, ago(2), ago(1))
+    read_cache.clear()  # the stale answer is cached for 2 minutes
     response = client.head("/health")
     assert response.status_code == 200
     assert response.content == b""

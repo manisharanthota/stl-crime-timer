@@ -1,9 +1,14 @@
-"""Read-side queries. Everything is computed from confirmed incidents on each call."""
+"""Read-side queries, computed from confirmed incidents.
+
+The public endpoints cache what these load (api/cache.py), so each query selects only
+the columns the page shows and is split from the parts that depend on the current
+time (load_* -> build_*).
+"""
 
 from datetime import datetime
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, load_only, selectinload
 
 from api.schemas import (
     AdminIncidentOut,
@@ -16,7 +21,7 @@ from api.schemas import (
     TimerEntry,
     TimerResponse,
 )
-from models import CRIME_TYPES, Incident, RawItem
+from models import CRIME_TYPES, Incident, RawItem, Source
 
 CONFIRMED = Incident.status == "confirmed"
 
@@ -41,33 +46,48 @@ def _seconds(start: datetime, end: datetime) -> int:
     return max(0, int((end - start).total_seconds()))
 
 
-def timer(session: Session, now: datetime) -> TimerResponse:
-    by_type = []
+def load_latest(session: Session) -> dict[str, LastIncident | None]:
+    """Latest confirmed incident per crime type (seconds_since left at 0; build_timer
+    fills it in). One row per type, only the columns the timer shows."""
+    latest: dict[str, LastIncident | None] = {}
     for crime_type in CRIME_TYPES:
-        incident = session.scalars(
-            select(Incident)
+        row = session.execute(
+            select(
+                Incident.id, Incident.crime_type, Incident.occurred_at, Incident.location,
+                Incident.time_estimated, Incident.was_shooting,
+            )
             .where(CONFIRMED, _counts_as_sql(crime_type))
             .order_by(Incident.occurred_at.desc(), Incident.id.desc())
             .limit(1)
         ).first()
-        last = None
-        if incident is not None:
-            last = LastIncident(
-                incident_id=incident.id,
-                crime_type=incident.crime_type,
-                occurred_at=incident.occurred_at,
-                seconds_since=_seconds(incident.occurred_at, now),
-                location=incident.location,
-                time_estimated=incident.time_estimated,
-                was_shooting=incident.was_shooting,
-            )
-        by_type.append(TimerEntry(crime_type=crime_type, last=last))
+        latest[crime_type] = None if row is None else LastIncident(
+            incident_id=row.id,
+            crime_type=row.crime_type,
+            occurred_at=row.occurred_at,
+            seconds_since=0,
+            location=row.location,
+            time_estimated=row.time_estimated,
+            was_shooting=row.was_shooting,
+        )
+    return latest
 
+
+def build_timer(latest: dict[str, LastIncident | None], now: datetime) -> TimerResponse:
+    def since(last: LastIncident | None) -> LastIncident | None:
+        if last is None:
+            return None
+        return last.model_copy(update={"seconds_since": _seconds(last.occurred_at, now)})
+
+    by_type = [TimerEntry(crime_type=t, last=since(latest.get(t))) for t in CRIME_TYPES]
     lasts = [e.last for e in by_type if e.last is not None]
     overall = max(lasts, key=lambda l: (l.occurred_at, l.incident_id), default=None)
     return TimerResponse(
         now=now, overall=TimerEntry(crime_type=None, last=overall), by_type=by_type
     )
+
+
+def timer(session: Session, now: datetime) -> TimerResponse:
+    return build_timer(load_latest(session), now)
 
 
 def incident_out(incident: Incident) -> IncidentOut:
@@ -106,7 +126,13 @@ def admin_incident_out(incident: Incident) -> AdminIncidentOut:
 
 
 def _with_articles():
-    return selectinload(Incident.raw_items).selectinload(RawItem.source)
+    """Linked articles without their bodies (up to 1500 chars each, never shown)."""
+    return (
+        selectinload(Incident.raw_items)
+        .load_only(RawItem.id, RawItem.title, RawItem.url, RawItem.published_at, RawItem.source_id)
+        .selectinload(RawItem.source)
+        .load_only(Source.id, Source.name)
+    )
 
 
 def get_incident(session: Session, incident_id: int) -> Incident | None:
@@ -115,12 +141,21 @@ def get_incident(session: Session, incident_id: int) -> Incident | None:
     ).first()
 
 
-def recent_incidents(session: Session, limit: int) -> list[IncidentOut]:
+def recent_incidents(session: Session, limit: int, offset: int = 0) -> list[IncidentOut]:
+    """One page of confirmed incidents, newest first, with their articles."""
     incidents = session.scalars(
         select(Incident)
         .where(CONFIRMED)
-        .options(_with_articles())
+        .options(
+            load_only(
+                Incident.id, Incident.crime_type, Incident.occurred_at,
+                Incident.time_estimated, Incident.was_shooting, Incident.location,
+                Incident.neighborhood, Incident.status,
+            ),
+            _with_articles(),
+        )
         .order_by(Incident.occurred_at.desc(), Incident.id.desc())
+        .offset(offset)
         .limit(limit)
     ).all()
     return [incident_out(i) for i in incidents]
@@ -183,22 +218,29 @@ def _longest_gap(rows: list[tuple[int, datetime]], now: datetime) -> Gap | None:
     return best
 
 
-def stats(session: Session, now: datetime) -> StatsResponse:
-    rows = session.execute(
-        select(Incident.id, Incident.crime_type, Incident.was_shooting, Incident.occurred_at)
-        .where(CONFIRMED)
-        .order_by(Incident.occurred_at, Incident.id)
-    ).all()
-    overall = [(r.id, r.occurred_at) for r in rows]
+StatsRow = tuple[int, str, bool, datetime]  # id, crime_type, was_shooting, occurred_at
+
+
+def load_stats_rows(session: Session) -> list[StatsRow]:
+    """Every confirmed incident, oldest first: the longest gap needs them all, so this
+    selects four small columns and the endpoint caches the result."""
+    return [
+        tuple(r)
+        for r in session.execute(
+            select(Incident.id, Incident.crime_type, Incident.was_shooting, Incident.occurred_at)
+            .where(CONFIRMED)
+            .order_by(Incident.occurred_at, Incident.id)
+        ).all()
+    ]
+
+
+def build_stats(rows: list[StatsRow], now: datetime) -> StatsResponse:
+    overall = [(id_, at) for id_, _, _, at in rows]
     by_type = [
         GapEntry(
             crime_type=t,
             longest=_longest_gap(
-                [
-                    (r.id, r.occurred_at)
-                    for r in rows
-                    if _counts_as(t, r.crime_type, r.was_shooting)
-                ],
+                [(id_, at) for id_, type_, shot, at in rows if _counts_as(t, type_, shot)],
                 now,
             ),
         )
@@ -209,3 +251,7 @@ def stats(session: Session, now: datetime) -> StatsResponse:
         overall=GapEntry(crime_type=None, longest=_longest_gap(overall, now)),
         by_type=by_type,
     )
+
+
+def stats(session: Session, now: datetime) -> StatsResponse:
+    return build_stats(load_stats_rows(session), now)

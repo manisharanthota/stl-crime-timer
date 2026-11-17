@@ -68,6 +68,11 @@
   #fb-count { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
   #fb-status { font-size: 0.9rem; }
   #fb-status.err { color: var(--accent); }
+  #more {
+    display: block; margin: 12px auto 0; font: inherit; padding: 6px 16px; cursor: pointer;
+    border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  #more:disabled { opacity: 0.6; cursor: default; }
   .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 </style>
 </head>
@@ -84,6 +89,7 @@
 
   <h2>Recent incidents</h2>
   <ul class="incidents" id="incidents"><li class="empty">Loading…</li></ul>
+  <button type="button" id="more" hidden>Load more</button>
 
   <h2>Feedback or suggestion</h2>
   <form id="feedback" novalidate>
@@ -124,6 +130,11 @@
 
   let timer = null;        // last /timer response
   let fetchedAt = 0;       // performance.now() when it arrived
+  let timerAge = 0;        // seconds a shared cache held that response (Age header)
+  const PAGE = 20;         // incidents per page
+  let firstPage = [];      // newest PAGE incidents, refreshed every minute
+  let olderPages = [];     // further pages from "Load more"
+  let morePossible = false;
 
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => {
@@ -152,7 +163,8 @@
     return `${h} ${h === 1 ? "hour" : "hours"}, ${m} ${m === 1 ? "minute" : "minutes"}`;
   }
 
-  const elapsed = (last) => last.seconds_since + (performance.now() - fetchedAt) / 1000;
+  const elapsed = (last) =>
+    last.seconds_since + timerAge + (performance.now() - fetchedAt) / 1000;
 
   function renderTimer() {
     const cards = $("type-cards");
@@ -221,7 +233,11 @@
     }
   }
 
-  function renderIncidents(list) {
+  function renderIncidents() {
+    // The first page refreshes under pages loaded earlier: drop repeats.
+    const seen = new Set(firstPage.map((i) => i.id));
+    const list = [...firstPage, ...olderPages.filter((i) => !seen.has(i.id))];
+    $("more").hidden = !morePossible;
     const ul = $("incidents");
     ul.replaceChildren();
     if (!list.length) {
@@ -260,26 +276,33 @@
   }
 
   // /health answers 503 (with the same body) when the pipeline is stale.
+  // The API caches for 2 minutes; if a shared cache (CDN) answered, Age says how old.
   async function getJSON(path, alsoOk = []) {
     const r = await fetch(path, { cache: "no-store" });
     if (!r.ok && !alsoOk.includes(r.status)) throw new Error(`${path}: ${r.status}`);
-    return r.json();
+    const body = await r.json();
+    return { body, age: Number(r.headers.get("Age")) || 0 };
   }
 
   async function refresh() {
     const results = await Promise.allSettled([
-      getJSON("/timer"), getJSON("/stats"), getJSON("/incidents?limit=20"),
+      getJSON("/timer"), getJSON("/stats"), getJSON(`/incidents?limit=${PAGE}`),
       getJSON("/health", [503]),
     ]);
     const [t, s, i, h] = results;
     if (t.status === "fulfilled") {
-      timer = t.value;
+      timer = t.value.body;
+      timerAge = t.value.age;
       fetchedAt = performance.now();
       renderTimer();
     }
-    if (s.status === "fulfilled") renderStats(s.value);
-    if (i.status === "fulfilled") renderIncidents(i.value);
-    if (h.status === "fulfilled") renderHealth(h.value);
+    if (s.status === "fulfilled") renderStats(s.value.body);
+    if (i.status === "fulfilled") {
+      firstPage = i.value.body;
+      if (!olderPages.length) morePossible = firstPage.length === PAGE;
+      renderIncidents();
+    }
+    if (h.status === "fulfilled") renderHealth(h.value.body);
     $("stale").hidden = results.every((r) => r.status === "fulfilled");
   }
 
@@ -323,9 +346,39 @@
     }
   });
 
-  refresh();
+  $("more").addEventListener("click", async () => {
+    const button = $("more");
+    button.disabled = true;
+    try {
+      const offset = PAGE + olderPages.length;
+      const { body } = await getJSON(`/incidents?limit=${PAGE}&offset=${offset}`);
+      olderPages = olderPages.concat(body);
+      morePossible = body.length === PAGE;
+      renderIncidents();
+    } catch {
+      /* leave the button for another try */
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  // Poll once a minute, but not while the tab is hidden; catch up when it's back.
+  let poll = null;
+  function startPolling() {
+    if (poll !== null) return;
+    refresh();
+    poll = setInterval(refresh, 60000);
+  }
+  function stopPolling() {
+    clearInterval(poll);
+    poll = null;
+  }
+  document.addEventListener("visibilitychange", () =>
+    document.hidden ? stopPolling() : startPolling());
+
+  if (!document.hidden) startPolling();
+  else refresh();  // first paint even if opened in a background tab
   setInterval(tick, 1000);
-  setInterval(refresh, 60000);
 })();
 </script>
 </body>
