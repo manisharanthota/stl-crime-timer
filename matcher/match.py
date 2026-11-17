@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -18,6 +18,14 @@ MATCH_WINDOW = timedelta(hours=6)
 # Used when the incident's or the item's time is a published_at fallback.
 ESTIMATED_MATCH_WINDOW = timedelta(hours=24)
 CONFIRM_THRESHOLD = 0.8
+# Database egress: each run only reads recent rows, not all history.
+# Unlinked items are retried for this long after their newest classification (fetched
+# items are at most MAX_ITEM_AGE_DAYS old, so the original of a follow-up has long
+# arrived by then).
+PENDING_WINDOW = timedelta(days=14)
+# refresh_incidents only revisits incidents with an item (re)classified this recently,
+# plus the ones this run linked items to. Generous, so missed runs don't skip any.
+REFRESH_WINDOW = timedelta(hours=48)
 LIVE_STATUSES = ("confirmed", "review")
 # A shooting victim can later die, so these two may describe the same incident.
 COMPATIBLE_TYPES = {
@@ -69,8 +77,9 @@ class _Pending:
     estimated: bool
 
 
-def _pending(session: Session) -> tuple[list[_Pending], int, int]:
-    """Newest classification of each unlinked item that is a St. Louis crime.
+def _pending(session: Session, since: datetime) -> tuple[list[_Pending], int, int]:
+    """Newest classification (made since `since`) of each unlinked item that is a St.
+    Louis crime.
 
     Returns the pending items sorted oldest first, plus how many were skipped for
     having no usable time, and how many follow-ups were skipped for having no
@@ -86,6 +95,7 @@ def _pending(session: Session) -> tuple[list[_Pending], int, int]:
             Classification.in_stl.is_(True),
             Classification.crime_type.is_not(None),
             Classification.raw_item_id.not_in(linked),
+            Classification.created_at >= since,
         )
     ).all()
 
@@ -164,7 +174,9 @@ def _merge(incident: Incident, item: _Pending) -> None:
         incident.status = "confirmed"
 
 
-def refresh_incidents(session: Session) -> int:
+def refresh_incidents(
+    session: Session, since: datetime | None = None, incident_ids: set[int] = frozenset()
+) -> int:
     """Re-apply linked items' newest classifications to live incidents.
 
     The matcher only looks at unlinked items, so a re-classified linked item would
@@ -176,8 +188,18 @@ def refresh_incidents(session: Session) -> int:
     - was_shooting is turned on, never off;
     - an empty location/neighborhood is filled.
     Rejected and merged incidents are left alone, and so is every field an admin
-    set by hand. Returns how many changed.
+    set by hand. With `since`, only incidents with an item classified since then, or
+    in `incident_ids`, are revisited (the rest can't have changed). Returns how many
+    changed.
     """
+    scope = []
+    if since is not None:
+        recent = (
+            select(IncidentItem.incident_id)
+            .join(Classification, Classification.raw_item_id == IncidentItem.raw_item_id)
+            .where(Classification.created_at >= since)
+        )
+        scope = [Incident.id.in_(recent) | Incident.id.in_(sorted(incident_ids))]
     rows = session.execute(
         select(Incident, Classification, RawItem.published_at)
         .join(IncidentItem, IncidentItem.incident_id == Incident.id)
@@ -188,6 +210,7 @@ def refresh_incidents(session: Session) -> int:
             Classification.id.in_(_latest_ids()),
             Classification.is_crime.is_(True),
             Classification.in_stl.is_(True),
+            *scope,
         )
         .order_by(Incident.id, Classification.id)
     ).all()
@@ -224,18 +247,23 @@ def refresh_incidents(session: Session) -> int:
     return changed
 
 
-def match_pending(session: Session, *, threshold: float | None = None) -> dict[str, int]:
+def match_pending(
+    session: Session, *, threshold: float | None = None, now: datetime | None = None
+) -> dict[str, int]:
     """Link every unlinked St. Louis crime classification to an incident, then
     refresh live incidents from their linked items' newest classifications.
 
     Items matching a rejected incident are left unlinked so a manually rejected
     crime doesn't come back as a new incident. Follow-ups never create an incident:
     without a match they stay unlinked and are tried again next run. Safe to run
-    repeatedly.
+    repeatedly. Only reads recent rows (PENDING_WINDOW, REFRESH_WINDOW) to keep
+    database egress flat as history grows.
     """
     if threshold is None:
         threshold = get_settings().match_location_threshold
-    pending, skipped, skipped_followup = _pending(session)
+    now = now or datetime.now(timezone.utc)
+    pending, skipped, skipped_followup = _pending(session, now - PENDING_WINDOW)
+    touched: set[int] = set()
     counts = {
         "created": 0, "merged": 0, "skipped_rejected": 0, "skipped_no_time": skipped,
         "skipped_followup_no_time": skipped_followup, "skipped_followup_no_match": 0,
@@ -272,7 +300,8 @@ def match_pending(session: Session, *, threshold: float | None = None) -> dict[s
             counts["merged"] += 1
         session.add(IncidentItem(incident_id=incident.id, raw_item_id=c.raw_item_id))
         session.flush()
+        touched.add(incident.id)
 
-    counts["refreshed"] = refresh_incidents(session)
+    counts["refreshed"] = refresh_incidents(session, now - REFRESH_WINDOW, touched)
     session.commit()
     return counts

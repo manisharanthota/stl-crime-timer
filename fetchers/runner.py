@@ -49,34 +49,44 @@ def drop_stale(items: list[FetchedItem], cutoff: datetime | None) -> list[Fetche
     return [i for i in items if i.published_at is None or to_utc(i.published_at) >= cutoff]
 
 
+def _insert_ignoring_duplicates(session: Session):
+    """INSERT ... ON CONFLICT DO NOTHING for this session's database."""
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    return insert(RawItem).on_conflict_do_nothing(index_elements=[RawItem.url_hash])
+
+
 def store_items(session: Session, source: Source, items: list[FetchedItem]) -> int:
-    """Add items not already in raw_items (by normalized url hash). Returns count added."""
+    """Add items not already in raw_items (by normalized url hash). Returns count added.
+
+    The unique index on url_hash does the dedup (insert ... on conflict do nothing),
+    so nothing is read back from the database first."""
     by_hash: dict[str, FetchedItem] = {}
     for item in items:
         by_hash.setdefault(hash_url(normalize_url(item.url)), item)
     if not by_hash:
         return 0
 
-    existing = set(
-        session.scalars(select(RawItem.url_hash).where(RawItem.url_hash.in_(by_hash)))
-    )
-    added = 0
-    for url_hash, item in by_hash.items():
-        if url_hash in existing:
-            continue
-        session.add(
-            RawItem(
-                source_id=source.id,
-                url=item.url,
-                url_hash=url_hash,
-                title=item.title,
-                body=item.body,
-                published_at=item.published_at,
-                status="new",
-            )
-        )
-        added += 1
-    return added
+    rows = [
+        {
+            "source_id": source.id,
+            "url": item.url,
+            "url_hash": url_hash,
+            "title": item.title,
+            "body": item.body,
+            "published_at": item.published_at,
+            "status": "new",
+        }
+        for url_hash, item in by_hash.items()
+    ]
+    # RETURNING gives back only the rows actually inserted (rowcount isn't reliable
+    # for multi-row inserts on every driver).
+    inserted = session.execute(
+        _insert_ignoring_duplicates(session).values(rows).returning(RawItem.id)
+    ).all()
+    return len(inserted)
 
 
 def run_fetchers(

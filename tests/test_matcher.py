@@ -778,3 +778,56 @@ def test_manual_cleared_neighborhood_stays_cleared(session, add):
     assert match_pending(session, threshold=85)["merged"] == 1
     [inc] = incidents(session)
     assert inc.neighborhood is None
+
+
+# --- recent-rows windows (database egress) ------------------------------------
+
+def _real_now() -> datetime:
+    # classifications.created_at is the database's CURRENT_TIMESTAMP.
+    return datetime.now(timezone.utc)
+
+
+def test_pending_ignores_items_classified_long_ago(session, add):
+    from matcher.match import PENDING_WINDOW
+
+    add()
+    later = _real_now() + PENDING_WINDOW + timedelta(minutes=1)
+    assert match_pending(session, threshold=85, now=later) == NOTHING
+    assert incidents(session) == []
+    assert match_pending(session, threshold=85, now=_real_now())["created"] == 1
+
+
+def test_unmatched_followup_retried_only_within_window(session, add):
+    from matcher.match import PENDING_WINDOW
+
+    add(is_followup=True)
+    soon = _real_now() + timedelta(days=3)
+    assert match_pending(session, threshold=85, now=soon)["skipped_followup_no_match"] == 1
+    later = _real_now() + PENDING_WINDOW + timedelta(minutes=1)
+    assert match_pending(session, threshold=85, now=later)["skipped_followup_no_match"] == 0
+
+
+def test_refresh_skips_incidents_without_recent_classifications(session, add):
+    from matcher.match import REFRESH_WINDOW
+
+    item = add(occurred_at=T0, time_precision="date_only", published_at=T0 + timedelta(hours=20))
+    match_pending(session, threshold=85)
+    reclassify(session, item, occurred_at=T0 + timedelta(hours=12))
+
+    later = _real_now() + REFRESH_WINDOW + timedelta(minutes=1)
+    assert match_pending(session, threshold=85, now=later)["refreshed"] == 0
+    assert incidents(session)[0].time_estimated is True
+    assert match_pending(session, threshold=85, now=_real_now())["refreshed"] == 1
+
+
+def test_refresh_includes_incidents_given_by_id(session, add):
+    from matcher.match import refresh_incidents
+
+    item = add(occurred_at=T0, time_precision="date_only", published_at=T0 + timedelta(hours=20))
+    match_pending(session, threshold=85)
+    reclassify(session, item, occurred_at=T0 + timedelta(hours=12))
+    [inc] = incidents(session)
+
+    future = _real_now() + timedelta(days=30)
+    assert refresh_incidents(session, future) == 0
+    assert refresh_incidents(session, future, {inc.id}) == 1

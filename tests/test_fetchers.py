@@ -232,3 +232,25 @@ def test_cli_prints_counts(monkeypatch, capsys):
     assert "KSDK 5: 4 new item(s)" in out
     assert "Fox2: 0 new item(s)" in out
     assert "2 source(s) fetched successfully" in out
+
+
+def test_dedup_reads_nothing_back(session, client):
+    """The unique url_hash index dedups (on conflict do nothing): storing a feed never
+    selects existing raw_items, which would cost database egress every run."""
+    from sqlalchemy import event
+
+    add_source(session, GOOD_URL)
+    run_fetchers(session, client, now=NOW)
+    seen: list[str] = []
+
+    def record(conn, cursor, statement, *args):
+        seen.append(statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        assert run_fetchers(session, client, now=NOW) == {GOOD_URL: 0}
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert not [s for s in seen if s.lstrip().startswith("SELECT") and "raw_items" in s]
+    assert any(s.lstrip().startswith("INSERT INTO raw_items") for s in seen)

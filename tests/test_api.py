@@ -13,8 +13,10 @@ from api.main import (
     get_admin_limiters,
     get_admin_token,
     get_now,
+    get_read_cache,
     get_session,
 )
+from api.cache import ReadCache
 from models import Incident, IncidentItem, RawItem, Source, hash_url
 
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
@@ -249,6 +251,15 @@ def test_incidents_limit(client, add):
     assert len(client.get("/incidents").json()) == 5
     assert client.get("/incidents?limit=0").status_code == 422
     assert client.get("/incidents?limit=101").status_code == 422
+
+
+def test_incidents_offset_pages_back(client, add):
+    ids = [add("shooting", hours_ago=h + 1) for h in range(5)]  # newest first
+    assert [i["id"] for i in client.get("/incidents?limit=2").json()] == ids[:2]
+    assert [i["id"] for i in client.get("/incidents?limit=2&offset=2").json()] == ids[2:4]
+    assert [i["id"] for i in client.get("/incidents?limit=2&offset=4").json()] == ids[4:]
+    assert client.get("/incidents?limit=2&offset=6").json() == []
+    assert client.get("/incidents?offset=-1").status_code == 422
 
 
 # --- /stats ---
@@ -746,3 +757,112 @@ def test_merge_carries_manual_time_from_source(client, add, session_factory):
     assert (body["occurred_at"], body["time_estimated"]) == ("2026-10-05T05:00:00Z", True)
     with session_factory() as s:
         assert s.get(Incident, target).manual_occurred_at is True
+
+
+# --- read cache (Supabase egress) ---
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+@pytest.fixture
+def cache_clock():
+    """The app's read cache on a fake monotonic clock."""
+    clock = FakeClock()
+    cache = ReadCache(ttl=120.0, clock=clock)
+    app.dependency_overrides[get_read_cache] = lambda: cache
+    return clock
+
+
+@pytest.fixture
+def statements(backend_engine):
+    """SQL statements sent to the database during the test."""
+    from sqlalchemy import event
+
+    seen: list[str] = []
+
+    def record(conn, cursor, statement, *args):
+        seen.append(statement)
+
+    event.listen(backend_engine, "before_cursor_execute", record)
+    yield seen
+    event.remove(backend_engine, "before_cursor_execute", record)
+
+
+@pytest.mark.parametrize("path", ["/timer", "/stats", "/incidents", "/health"])
+def test_public_reads_send_cache_control(client, path):
+    response = client.get(path)
+    assert response.headers["Cache-Control"] == "public, max-age=120"
+
+
+@pytest.mark.parametrize("path", ["/timer", "/stats", "/incidents", "/incidents?limit=5", "/health"])
+def test_public_reads_hit_the_database_once_per_ttl(client, add, cache_clock, statements, path):
+    add("shooting", articles=1)
+    client.get(path)
+    first = len(statements)
+    assert first > 0
+    cache_clock.t = 119
+    client.get(path)
+    assert len(statements) == first  # served from memory
+    cache_clock.t = 121
+    client.get(path)
+    assert len(statements) > first  # expired: read again
+
+
+def test_cached_timer_still_counts_up(client, add, cache_clock):
+    """Only database rows are cached; seconds_since follows the request's clock."""
+    now = {"t": NOW}
+    app.dependency_overrides[get_now] = lambda: now["t"]
+    add("shooting", hours_ago=1)
+    assert client.get("/timer").json()["overall"]["last"]["seconds_since"] == 3600
+    now["t"] = NOW + timedelta(seconds=90)
+    body = client.get("/timer").json()
+    assert body["overall"]["last"]["seconds_since"] == 3690
+    assert body["now"] == "2026-10-05T12:01:30Z"
+    stats = client.get("/stats").json()
+    assert stats["overall"]["longest"]["seconds"] == 3690  # ongoing gap up to now
+
+
+def test_pipeline_writes_show_after_ttl(client, add, cache_clock):
+    add("shooting", hours_ago=5)
+    assert len(client.get("/incidents").json()) == 1
+    add("burglary", hours_ago=1)  # the pipeline, from another process
+    assert len(client.get("/incidents").json()) == 1
+    cache_clock.t = 121
+    assert len(client.get("/incidents").json()) == 2
+
+
+def test_admin_write_clears_cache(client, add, cache_clock):
+    shooting = add("shooting", hours_ago=1)
+    add("burglary", hours_ago=5)
+    assert client.get("/timer").json()["overall"]["last"]["incident_id"] == shooting
+    assert client.post(f"/admin/incidents/{shooting}/reject", headers=AUTH).status_code == 200
+    assert client.get("/timer").json()["overall"]["last"]["crime_type"] == "burglary"
+
+
+def test_health_staleness_uses_request_time(client, cache_clock, session_factory):
+    """A cached last success still goes stale on time."""
+    from models import PipelineRun
+
+    with session_factory() as s:
+        s.add(PipelineRun(started_at=NOW - timedelta(minutes=2), finished_at=NOW - timedelta(minutes=1), status="success"))
+        s.commit()
+    now = {"t": NOW}
+    app.dependency_overrides[get_now] = lambda: now["t"]
+    assert client.get("/health").status_code == 200
+    now["t"] = NOW + timedelta(minutes=30)
+    assert client.get("/health").status_code == 503
+
+
+def test_incidents_never_load_article_bodies(client, add, statements):
+    add("shooting", articles=2)
+    client.get("/incidents")
+    raw_item_selects = [s for s in statements if s.startswith("SELECT") and "raw_items.title" in s]
+    assert raw_item_selects
+    assert not any("raw_items.body" in s for s in raw_item_selects)
+    assert not any("incidents.manual_location" in s for s in statements)

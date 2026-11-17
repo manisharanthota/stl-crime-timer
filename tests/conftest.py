@@ -75,3 +75,13 @@ def no_real_alerts(monkeypatch):
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def fresh_read_cache():
+    """The API's public read cache is module-level: start every test empty."""
+    from api.main import read_cache
+
+    read_cache.clear()
+    yield
+    read_cache.clear()
