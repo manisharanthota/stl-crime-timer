@@ -484,6 +484,21 @@ def test_page_labels_approximate_times(client):
     assert '"~"' not in html
 
 
+GOATCOUNTER = "https://stlcrimetimer.goatcounter.com/count"
+
+
+def test_page_counts_visits_with_goatcounter(client):
+    html = client.get("/").text
+    assert f'data-goatcounter="{GOATCOUNTER}"' in html
+    assert 'src="https://gc.zgo.at/count.js"' in html
+
+
+def test_admin_page_is_not_counted(client):
+    html = client.get("/admin").text
+    assert "goatcounter" not in html.lower()
+    assert "gc.zgo.at" not in html
+
+
 def test_admin_page_is_noindex_and_holds_no_token(client):
     r = client.get("/admin")
     assert r.status_code == 200
