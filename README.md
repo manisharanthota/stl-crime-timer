@@ -106,7 +106,7 @@ Requires Python 3.11+.
 
 ```bash
 # 1. Get the code
-git clone https://github.com/<your-username>/stl-crime-timer.git
+git clone https://github.com/manisharanthota/stl-crime-timer.git
 cd stl-crime-timer
 
 # 2. Set up Python
